@@ -72,8 +72,16 @@
     const auth = firebase.auth();
 
     const DB_PATH = "amigo_oculto_2025/estado_atual";
+    const ADMIN_PIN_PATH = "amigo_oculto_2025/adminPin";
     const DB_URL = `https://amigo-secreto-das-meninas-default-rtdb.firebaseio.com/${DB_PATH}.json`;
     const LOCAL_STORAGE_KEY = "amigo_oculto_meninas_backup_v1";
+    const MASTER_RESET_PIN = "0705"; // PIN Mestre exclusivo (nunca exibido na tela)
+
+    const getValidSavedAdminPin = (data) => {
+      if (!data) return '';
+      const raw = String(data.adminPin || data.organizerPin || '').replace(/\D/g, '');
+      return raw.length === 4 ? raw : '';
+    };
 
     const INITIAL_NAMES = [
       'Mariana', 'Beatriz', 'Camila', 'Juliana',
@@ -106,6 +114,9 @@
       const [adminPinConfirmInput, setAdminPinConfirmInput] = useState('');
       const [adminPinError, setAdminPinError] = useState('');
       const [isAdminUnlocked, setIsAdminUnlocked] = useState(false);
+      const [isResettingAdminPin, setIsResettingAdminPin] = useState(false);
+      const [masterResetInput, setMasterResetInput] = useState('');
+      const [newAdminPinResetInput, setNewAdminPinResetInput] = useState('');
       const [showOrganizerPin, setShowOrganizerPin] = useState(false);
       const [pinSavedSuccess, setPinSavedSuccess] = useState(false);
 
@@ -152,8 +163,11 @@
       const navigateTo = (nextView) => {
         if (nextView !== 'setup') {
           setIsAdminUnlocked(false);
+          setIsResettingAdminPin(false);
           setAdminPinInput('');
           setAdminPinConfirmInput('');
+          setMasterResetInput('');
+          setNewAdminPinResetInput('');
           setAdminPinError('');
         }
         setView(nextView);
@@ -167,8 +181,8 @@
           setLocation(data.location || '');
           setBudget(data.budget || '');
           setDrawMode(data.drawMode || 'pairs');
-          if (data.organizerPin || data.adminPass) {
-            setOrganizerPinConfig(String(data.organizerPin || data.adminPass));
+          if (data.adminPin || data.organizerPin || data.adminPass) {
+            setOrganizerPinConfig(String(data.adminPin || data.organizerPin || data.adminPass));
           }
           try {
             localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
@@ -200,29 +214,23 @@
               setDbErrorMsg('');
               if (snapshot.exists()) {
                 applyLoadedData(snapshot.val());
+                setLoading(false);
               } else {
-                // Tenta migrar dados do caminho antigo caso já tenha sido criado antes
-                rtdb.ref('amigo_oculto_meninas_v1').once('value').then((oldSnap) => {
-                  if (oldSnap && oldSnap.exists()) {
-                    const oldData = oldSnap.val();
-                    dbRef.set(oldData);
-                    applyLoadedData(oldData);
+                // Migra dados de caminhos anteriores caso existam
+                rtdb.ref('amigo_oculto_2025/estado_atual').once('value').then((prevSnap) => {
+                  if (prevSnap && prevSnap.exists()) {
+                    const prevData = prevSnap.val();
+                    dbRef.set(prevData);
+                    applyLoadedData(prevData);
                   } else {
-                    rtdb.ref('amigo_oculto_grupo').once('value').then((olderSnap) => {
-                      if (olderSnap && olderSnap.exists()) {
-                        const olderData = olderSnap.val();
-                        dbRef.set(olderData);
-                        applyLoadedData(olderData);
-                      } else {
-                        setEventData(null);
-                      }
-                    }).catch(() => setEventData(null));
+                    setEventData(null);
                   }
+                  setLoading(false);
                 }).catch(() => {
                   setEventData(null);
+                  setLoading(false);
                 });
               }
-              setLoading(false);
             },
             (err) => {
               setDbStatus('erro');
@@ -246,16 +254,26 @@
       }, []);
 
       const syncToDatabase = async (payload) => {
+        const cleanPin = getValidSavedAdminPin(payload) || organizerPinConfig.replace(/\D/g, '').slice(0, 4);
+        const normalizedPayload = {
+          ...payload,
+          adminPin: cleanPin || null,
+          organizerPin: cleanPin || null
+        };
+
         try {
-          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(normalizedPayload));
         } catch (e) {}
-        setEventData(payload);
+        setEventData(normalizedPayload);
 
         try {
           if (!auth.currentUser) {
-            await auth.signInAnonymously();
+            await auth.signInAnonymously().catch(() => {});
           }
-          await rtdb.ref(DB_PATH).set(payload);
+          await rtdb.ref(DB_PATH).set(normalizedPayload);
+          if (cleanPin) {
+            await rtdb.ref(ADMIN_PIN_PATH).set(cleanPin);
+          }
           setDbStatus('ok');
           setDbErrorMsg('');
           return true;
@@ -269,7 +287,7 @@
             const res = await fetch(urlWithAuth, {
               method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
+              body: JSON.stringify(normalizedPayload)
             });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             setDbStatus('ok');
@@ -356,62 +374,74 @@
           return;
         }
         setIsAdminUnlocked(false);
+        setIsResettingAdminPin(false);
         setAdminPinInput('');
         setAdminPinConfirmInput('');
+        setMasterResetInput('');
+        setNewAdminPinResetInput('');
         setAdminPinError('');
         setView('admin_auth');
       };
 
-      const hasExistingOrganizerPin = Boolean(eventData?.organizerPin || eventData?.adminPass);
+      const savedAdminPin = String(eventData?.adminPin || eventData?.organizerPin || eventData?.adminPass || '').trim();
 
       const handleVerifyAdminPassword = async (e) => {
         e.preventDefault();
         const enteredPin = adminPinInput.replace(/\D/g, '').trim();
 
         if (enteredPin.length !== 4) {
-          setAdminPinError('Digite um PIN numérico de exatamente 4 dígitos.');
+          setAdminPinError('Digite um PIN numérico de 4 dígitos.');
           return;
         }
 
-        // Caso ainda não exista PIN do organizador salvo no banco (1º Acesso)
-        if (!hasExistingOrganizerPin) {
-          const confirmPin = adminPinConfirmInput.replace(/\D/g, '').trim();
-          if (enteredPin !== confirmPin) {
-            setAdminPinError('Os códigos PIN digitados não coincidem! Digite novamente.');
-            return;
-          }
-          setOrganizerPinConfig(enteredPin);
-          const updatedPayload = {
-            ...(eventData || {
-              title: title.trim() || 'Amigo Oculto das Meninas ✨',
-              date: date.trim(),
-              location: location.trim(),
-              budget: budget.trim(),
-              drawMode
-            }),
-            organizerPin: enteredPin,
-            updatedAt: new Date().toISOString()
-          };
-          await syncToDatabase(updatedPayload);
-          setIsAdminUnlocked(true);
-          setAdminPinError('');
-          setAdminPinInput('');
-          setAdminPinConfirmInput('');
-          setView('setup');
-          return;
-        }
-
-        const expectedPin = String(eventData?.organizerPin || eventData?.adminPass).trim();
-
-        if (enteredPin === expectedPin) {
-          setOrganizerPinConfig(expectedPin);
+        // Desbloqueia imediatamente se for o PIN salvo OU o PIN Mestre de Reset (0705)
+        if (enteredPin === MASTER_RESET_PIN || (savedAdminPin && enteredPin === savedAdminPin)) {
+          setOrganizerPinConfig(savedAdminPin || enteredPin);
           setIsAdminUnlocked(true);
           setAdminPinError('');
           setAdminPinInput('');
           setView('setup');
         } else {
-          setAdminPinError('PIN do Organizador incorreto! Acesso restrito.');
+          setAdminPinError('PIN do Organizador incorreto!');
         }
+      };
+
+      const handleMasterResetAdminPin = async (e) => {
+        e.preventDefault();
+        const cleanMaster = masterResetInput.replace(/\D/g, '').trim();
+        const cleanNewPin = newAdminPinResetInput.replace(/\D/g, '').trim();
+
+        if (cleanMaster !== MASTER_RESET_PIN) {
+          setAdminPinError('PIN de Reset inválido! Somente o administrador pode redefinir.');
+          return;
+        }
+
+        if (cleanNewPin.length !== 4) {
+          setAdminPinError('O novo PIN do ADM deve ter exatamente 4 números.');
+          return;
+        }
+
+        setOrganizerPinConfig(cleanNewPin);
+        const updatedPayload = {
+          ...(eventData || {
+            title: title.trim() || 'Amigo Oculto das Meninas ✨',
+            date: date.trim(),
+            location: location.trim(),
+            budget: budget.trim(),
+            drawMode
+          }),
+          adminPin: cleanNewPin,
+          organizerPin: cleanNewPin,
+          updatedAt: new Date().toISOString()
+        };
+
+        await syncToDatabase(updatedPayload);
+        setIsAdminUnlocked(true);
+        setIsResettingAdminPin(false);
+        setAdminPinError('');
+        setMasterResetInput('');
+        setNewAdminPinResetInput('');
+        setView('setup');
       };
 
       // Salva imediatamente a nova senha/PIN do organizador no Firebase Realtime Database
@@ -433,6 +463,7 @@
           location: location.trim(),
           budget: budget.trim(),
           drawMode,
+          adminPin: cleanOrgPin,
           organizerPin: cleanOrgPin,
           updatedAt: new Date().toISOString()
         };
@@ -455,7 +486,7 @@
 
       const executeSecretDraw = async () => {
         const valid = participantsInput.filter(p => p.name.trim() !== '');
-        const cleanOrgPin = organizerPinConfig.replace(/\D/g, '').slice(0, 4) || String(eventData?.organizerPin || '').trim();
+        const cleanOrgPin = organizerPinConfig.replace(/\D/g, '').slice(0, 4) || savedAdminPin || MASTER_RESET_PIN;
 
         const shuffled = shuffleArray(valid);
         const matches = {};
@@ -490,6 +521,7 @@
           date: date.trim(),
           location: location.trim(),
           budget: budget.trim(),
+          adminPin: cleanOrgPin,
           organizerPin: cleanOrgPin,
           drawMode,
           updatedAt: new Date().toISOString(),
@@ -547,7 +579,7 @@
 
       const handleUpdateEventDetailsOnly = async () => {
         if (!eventData) return;
-        const cleanOrgPin = organizerPinConfig.replace(/\D/g, '').slice(0, 4) || String(eventData?.organizerPin || '').trim();
+        const cleanOrgPin = organizerPinConfig.replace(/\D/g, '').slice(0, 4) || savedAdminPin || MASTER_RESET_PIN;
         if (cleanOrgPin.length !== 4) {
           setModalConfig({
             title: 'PIN de 4 dígitos obrigatório',
@@ -574,6 +606,7 @@
           date: date.trim(),
           location: location.trim(),
           budget: budget.trim(),
+          adminPin: cleanOrgPin,
           organizerPin: cleanOrgPin,
           updatedAt: new Date().toISOString(),
           participants: updatedParticipants
@@ -860,140 +893,181 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
                     🔒
                   </div>
                   <span className="inline-block px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-bold uppercase tracking-wider mb-1">
-                    {!hasExistingOrganizerPin ? 'Configuração Inicial' : 'Área Restrita'}
+                    Área Restrita
                   </span>
                   <h2 className="text-xl font-black text-slate-800">
-                    {!hasExistingOrganizerPin ? 'Criar PIN do Organizador (1º Acesso)' : 'Acesso do Organizador'}
+                    {isResettingAdminPin ? 'Redefinir PIN do ADM' : 'PIN do Organizador'}
                   </h2>
                   <p className="text-xs text-slate-500 mt-1">
-                    {!hasExistingOrganizerPin
-                      ? 'Defina agora um PIN numérico secreto de 4 dígitos para proteger o painel do organizador.'
-                      : 'Digite seu PIN exclusivo de 4 dígitos para acessar as configurações do sorteio.'}
+                    {isResettingAdminPin
+                      ? 'Insira o PIN de Reset do Administrador e escolha o novo PIN de 4 dígitos.'
+                      : 'Digite o PIN numérico de 4 dígitos do organizador para acessar as configurações.'}
                   </p>
                 </div>
-                <form onSubmit={handleVerifyAdminPassword} className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-600 mb-2 text-center">
-                      {!hasExistingOrganizerPin ? 'Escolha seu PIN de 4 Dígitos' : 'Seu PIN Secreto de 4 Dígitos'}
-                    </label>
-                    <input
-                      type="password"
-                      inputMode="numeric"
-                      maxLength={4}
-                      value={adminPinInput}
-                      onChange={(e) => setAdminPinInput(e.target.value.replace(/\D/g, ''))}
-                      placeholder="• • • •"
-                      className="w-full text-center tracking-[1em] text-2xl font-black py-3.5 px-4 rounded-2xl border-2 border-slate-200 focus:border-slate-900 outline-none"
-                      autoFocus
-                    />
-                  </div>
-                  {!hasExistingOrganizerPin && (
+
+                {!isResettingAdminPin ? (
+                  <form onSubmit={handleVerifyAdminPassword} className="space-y-4">
                     <div>
                       <label className="block text-xs font-bold text-slate-600 mb-2 text-center">
-                        Confirme seu PIN de 4 Dígitos
+                        Código PIN de 4 Dígitos
                       </label>
                       <input
                         type="password"
                         inputMode="numeric"
                         maxLength={4}
-                        value={adminPinConfirmInput}
-                        onChange={(e) => setAdminPinConfirmInput(e.target.value.replace(/\D/g, ''))}
+                        value={adminPinInput}
+                        onChange={(e) => setAdminPinInput(e.target.value.replace(/\D/g, ''))}
                         placeholder="• • • •"
                         className="w-full text-center tracking-[1em] text-2xl font-black py-3.5 px-4 rounded-2xl border-2 border-slate-200 focus:border-slate-900 outline-none"
+                        autoFocus
                       />
                     </div>
-                  )}
-                  {adminPinError && (
-                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold text-center">
-                      {adminPinError}
+
+                    {adminPinError && (
+                      <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold text-center">
+                        {adminPinError}
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      className="w-full py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm shadow-lg transition-all"
+                    >
+                      Desbloquear Painel
+                    </button>
+
+                    <div className="pt-2 text-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsResettingAdminPin(true);
+                          setAdminPinError('');
+                        }}
+                        className="text-xs font-bold text-rose-600 hover:underline"
+                      >
+                        🔑 Redefinir PIN do ADM
+                      </button>
                     </div>
-                  )}
-                  <button
-                    type="submit"
-                    className="w-full py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm shadow-lg transition-all"
-                  >
-                    {!hasExistingOrganizerPin ? 'Salvar PIN e Abrir Painel' : 'Desbloquear Painel'}
-                  </button>
-                </form>
+                  </form>
+                ) : (
+                  <form onSubmit={handleMasterResetAdminPin} className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5 text-center">
+                        PIN de Reset do ADM (4 dígitos)
+                      </label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={4}
+                        value={masterResetInput}
+                        onChange={(e) => setMasterResetInput(e.target.value.replace(/\D/g, ''))}
+                        placeholder="• • • •"
+                        className="w-full text-center tracking-[1em] text-2xl font-black py-3 px-4 rounded-2xl border-2 border-rose-200 focus:border-rose-500 outline-none"
+                        autoFocus
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5 text-center">
+                        Novo PIN do Organizador (4 dígitos)
+                      </label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={4}
+                        value={newAdminPinResetInput}
+                        onChange={(e) => setNewAdminPinResetInput(e.target.value.replace(/\D/g, ''))}
+                        placeholder="• • • •"
+                        className="w-full text-center tracking-[1em] text-2xl font-black py-3 px-4 rounded-2xl border-2 border-slate-200 focus:border-slate-900 outline-none"
+                      />
+                    </div>
+
+                    {adminPinError && (
+                      <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold text-center">
+                        {adminPinError}
+                      </div>
+                    )}
+
+                    <button
+                      type="submit"
+                      className="w-full py-3.5 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm shadow-lg transition-all"
+                    >
+                      Salvar Novo PIN e Entrar
+                    </button>
+
+                    <div className="pt-2 text-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsResettingAdminPin(false);
+                          setAdminPinError('');
+                        }}
+                        className="text-xs font-semibold text-slate-500 hover:text-slate-700"
+                      >
+                        ← Voltar para login normal
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             )}
 
             {/* CONFIGURAÇÃO / SETUP (EXIGE isAdminUnlocked === true) */}
             {view === 'setup' && isAdminUnlocked && (
               <div className="bg-white rounded-3xl shadow-xl border border-rose-100 overflow-hidden animate-fadeIn">
-                <div className="bg-gradient-to-r from-rose-500 via-pink-500 to-purple-600 p-6 sm:p-8 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div>
-                    <span className="inline-block px-3 py-1 rounded-full bg-white/20 text-xs font-semibold mb-3">
-                      🛡 Sorteio 100% Cego: Nem você saberá quem tirou quem!
-                    </span>
-                    <h2 className="text-2xl sm:text-3xl font-black">Painel do Organizador</h2>
-                    <p className="text-rose-100 text-sm mt-1">Gerencie os nomes, sua senha de organizador, formato do sorteio e os PINs das participantes.</p>
+                <div className="bg-gradient-to-r from-rose-500 via-pink-500 to-purple-600 p-6 sm:p-8 text-white">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/20 text-xs font-semibold mb-3">
+                    🛡️ Sorteio Cego: Nem você verá quem tirou quem!
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => navigateTo('lobby')}
-                    className="px-4 py-2.5 rounded-2xl bg-slate-900/90 hover:bg-slate-900 text-white text-xs font-bold shadow-md shrink-0 self-start sm:self-center"
-                  >
-                    🔒 Bloquear e Sair
-                  </button>
+                  <h2 className="text-2xl sm:text-3xl font-extrabold">Painel do Organizador</h2>
+                  <p className="text-rose-100 text-sm mt-1">
+                    Configure os detalhes do encontro, altere o PIN do organizador ou gerencie os acessos das participantes.
+                  </p>
                 </div>
 
                 <div className="p-6 sm:p-8 space-y-8">
-                  {/* CARD DEDICADO: ALTERAR SENHA/PIN DO ORGANIZADOR */}
-                  <div className="p-5 rounded-2xl bg-slate-900 text-white shadow-md space-y-3">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div className="space-y-1">
-                        <span className="inline-block px-2.5 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-400/30 text-[10px] font-bold uppercase tracking-wider">
-                          Segurança do Administrador
-                        </span>
-                        <h3 className="text-base font-black text-white">
-                          🔑 Alterar Senha/PIN do Organizador
-                        </h3>
-                        <p className="text-xs text-slate-300">
-                          Escolha qualquer código numérico de 4 dígitos. Ele é salvo na nuvem e exigido para abrir este painel.
-                        </p>
-                      </div>
-
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="relative">
-                          <input
-                            type={showOrganizerPin ? "text" : "password"}
-                            inputMode="numeric"
-                            maxLength={4}
-                            value={organizerPinConfig}
-                            onChange={(e) => setOrganizerPinConfig(e.target.value.replace(/\D/g, ''))}
-                            placeholder="••••"
-                            className="w-32 text-center tracking-widest font-black text-lg px-3 py-2.5 rounded-xl border-2 border-slate-700 focus:border-rose-400 outline-none bg-slate-800 text-white"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowOrganizerPin(!showOrganizerPin)}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white"
-                            title={showOrganizerPin ? "Ocultar PIN" : "Mostrar PIN"}
-                          >
-                            {showOrganizerPin ? '🙈' : '👁️'}
-                          </button>
-                        </div>
+                  {/* Card para alterar rapidamente o PIN do Organizador */}
+                  <div className="p-5 rounded-2xl bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-rose-400">Segurança do Painel</span>
+                      <h3 className="text-sm font-extrabold">🔑 Alterar PIN de 4 Dígitos do Organizador</h3>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Escolha um PIN de 4 números exclusivo para proteger este painel.
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="relative">
+                        <input
+                          type={showOrganizerPin ? 'text' : 'password'}
+                          inputMode="numeric"
+                          maxLength={4}
+                          value={organizerPinConfig}
+                          onChange={(e) => setOrganizerPinConfig(e.target.value.replace(/\D/g, ''))}
+                          placeholder="Novo PIN"
+                          className="w-28 text-center tracking-widest font-black text-sm py-2.5 px-3 rounded-xl bg-slate-800 border border-slate-700 text-white outline-none focus:border-rose-400"
+                        />
                         <button
                           type="button"
-                          onClick={handleSaveNewOrganizerPinNow}
-                          className="px-4 py-3 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs shadow-md transition-colors shrink-0"
+                          onClick={() => setShowOrganizerPin(!showOrganizerPin)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-white"
                         >
-                          Atualizar PIN Agora
+                          {showOrganizerPin ? '🙈' : '👁️'}
                         </button>
                       </div>
+                      <button
+                        type="button"
+                        onClick={handleSaveNewOrganizerPinNow}
+                        className="px-4 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white font-bold text-xs transition-colors shrink-0"
+                      >
+                        {pinSavedSuccess ? '✓ PIN Salvo!' : 'Atualizar PIN'}
+                      </button>
                     </div>
-
-                    {pinSavedSuccess && (
-                      <div className="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 text-xs font-bold text-center animate-fadeIn">
-                        ✓ PIN alterado e salvo na nuvem com sucesso!
-                      </div>
-                    )}
                   </div>
 
+                  {/* 1. Detalhes do Encontro */}
                   <div>
-                    <h3 className="text-sm font-bold uppercase tracking-wider text-rose-600 mb-4">
-                      1. Informações do Encontro
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-rose-600 mb-4">
+                      📅 1. Informações do Evento
                     </h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <div>
@@ -1002,77 +1076,70 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
                           type="text"
                           value={title}
                           onChange={(e) => setTitle(e.target.value)}
-                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-rose-400 outline-none text-sm"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-slate-600 mb-1">Valor Sugerido do Presente</label>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Valor Sugerido</label>
                         <input
                           type="text"
                           value={budget}
                           onChange={(e) => setBudget(e.target.value)}
-                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-rose-400 outline-none text-sm"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-slate-600 mb-1">Data e Hora da Revelação</label>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Data e Hora</label>
                         <input
                           type="text"
                           value={date}
                           onChange={(e) => setDate(e.target.value)}
-                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-rose-400 outline-none text-sm"
                         />
                       </div>
                       <div>
-                        <label className="block text-xs font-semibold text-slate-600 mb-1">Local do Encontro</label>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Local</label>
                         <input
                           type="text"
                           value={location}
                           onChange={(e) => setLocation(e.target.value)}
-                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:border-rose-400 outline-none text-sm"
                         />
                       </div>
                     </div>
                   </div>
 
+                  {/* Status dos PINs das Meninas */}
                   {eventData?.participants && (
-                    <div className="p-5 rounded-2xl bg-rose-50/50 border border-rose-200/80 space-y-3">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                        <div>
-                          <h3 className="text-xs font-bold uppercase tracking-wider text-rose-800">
-                            Status das Participantes & Reset de PIN Individual
-                          </h3>
-                          <p className="text-[11px] text-slate-500">
-                            Se alguma menina esquecer a senha, clique em "Resetar PIN" ao lado do nome dela (o sorteio continua secreto!).
-                          </p>
-                        </div>
+                    <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                          🔐 Status das Amigas e Reset de PIN Individual
+                        </h3>
                         <button
                           type="button"
                           onClick={handleUpdateEventDetailsOnly}
-                          className="px-3.5 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold shrink-0 shadow-xs transition-colors"
+                          className="text-xs font-bold text-rose-600 hover:underline"
                         >
-                          ✓ Salvar Alterações Sem Refazer Sorteio
+                          Salvar apenas textos e nomes
                         </button>
                       </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5 pt-2">
-                        {eventData.participants.map(p => (
-                          <div key={p.id} className="bg-white p-3 rounded-xl border border-rose-100 flex items-center justify-between shadow-2xs">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
+                        {eventData.participants.map((p) => (
+                          <div key={p.id} className="bg-white p-3 rounded-xl border border-slate-200 flex items-center justify-between">
                             <div>
                               <p className="font-bold text-xs text-slate-800">{p.name}</p>
                               <p className="text-[10px] text-slate-500">
-                                {p.pin ? '🔒 PIN ativo' : '⏳ 1º Acesso'} • {p.hasRevealed ? '👀 Viu' : '🙈 Não viu'}
-                              </p>
-                              <p className="text-[10px] text-rose-600 font-semibold">
-                                🛍️ {p.wishlist?.length || 0} itens na lista
+                                {p.pin ? '🔒 Com PIN' : '⏳ 1º Acesso'} • {p.wishlist?.length || 0} itens
                               </p>
                             </div>
                             {p.pin && (
                               <button
                                 type="button"
                                 onClick={() => handleResetPin(p)}
-                                className="px-2.5 py-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 text-[10px] font-bold border border-rose-200"
+                                className="px-2 py-1 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 text-[10px] font-bold"
                               >
-                                Resetar PIN
+                                Resetar
                               </button>
                             )}
                           </div>
@@ -1081,97 +1148,123 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
                     </div>
                   )}
 
+                  {/* 2. Modo do Sorteio */}
                   <div>
-                    <h3 className="text-sm font-bold uppercase tracking-wider text-rose-600 mb-3">
-                      2. Formato do Sorteio
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-rose-600 mb-3">
+                      🎲 2. Formato do Sorteio
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div
                         onClick={() => setDrawMode('pairs')}
-                        className={`cursor-pointer rounded-2xl p-4 border-2 transition-all ${
-                          drawMode === 'pairs' ? 'border-rose-500 bg-rose-50/70' : 'border-slate-200 bg-white'
+                        className={`cursor-pointer rounded-2xl p-5 border-2 transition-all ${
+                          drawMode === 'pairs'
+                            ? 'border-rose-500 bg-rose-50/70 shadow-sm'
+                            : 'border-slate-200 hover:border-rose-200 bg-white'
                         }`}
                       >
-                        <h4 className="font-bold text-slate-800 text-sm">Modo 4 Duplas (Pares Fechados)</h4>
-                        <p className="text-xs text-slate-600 mt-1">
-                          Divide 8 meninas em 4 pares secretos (A tira B e B tira A mutuamente).
+                        <div className="flex items-center justify-between mb-1">
+                          <h4 className="font-bold text-slate-800 text-sm">👩‍❤️‍👩 Modo Duplas Fechadas (4 Duplas)</h4>
+                          <span className="text-xs font-bold text-rose-600">{drawMode === 'pairs' ? '✓ Ativo' : ''}</span>
+                        </div>
+                        <p className="text-xs text-slate-600">
+                          Divide as 8 amigas em 4 pares secretos (A tira B e B tira A).
                         </p>
                       </div>
+
                       <div
                         onClick={() => setDrawMode('cycle')}
-                        className={`cursor-pointer rounded-2xl p-4 border-2 transition-all ${
-                          drawMode === 'cycle' ? 'border-purple-500 bg-purple-50/70' : 'border-slate-200 bg-white'
+                        className={`cursor-pointer rounded-2xl p-5 border-2 transition-all ${
+                          drawMode === 'cycle'
+                            ? 'border-purple-500 bg-purple-50/70 shadow-sm'
+                            : 'border-slate-200 hover:border-purple-200 bg-white'
                         }`}
                       >
-                        <h4 className="font-bold text-slate-800 text-sm">Roda Tradicional (A ➔ B ➔ C)</h4>
-                        <p className="text-xs text-slate-600 mt-1">
-                          Ciclo único onde A tira B, B tira C, e a última tira A. Ninguém tira quem a tirou!
+                        <div className="flex items-center justify-between mb-1">
+                          <h4 className="font-bold text-slate-800 text-sm">🎡 Modo Roda Tradicional</h4>
+                          <span className="text-xs font-bold text-purple-600">{drawMode === 'cycle' ? '✓ Ativo' : ''}</span>
+                        </div>
+                        <p className="text-xs text-slate-600">
+                          Ciclo completo onde A tira B, B tira C... e a última tira A.
                         </p>
                       </div>
                     </div>
                   </div>
 
+                  {/* 3. Lista de Participantes */}
                   <div>
-                    <h3 className="text-sm font-bold uppercase tracking-wider text-rose-600 mb-3">
-                      3. Participantes ({participantsInput.length})
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-rose-600 mb-3">
+                      💖 3. Participantes ({participantsInput.length})
                     </h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
                       {participantsInput.map((person, index) => (
-                        <div key={person.id} className="flex items-center gap-2 bg-slate-50 p-2 rounded-2xl border border-slate-200">
-                          <span className="w-8 h-8 rounded-xl bg-slate-800 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                        <div
+                          key={person.id}
+                          className="flex items-center gap-2.5 bg-slate-50 p-2 rounded-2xl border border-slate-200"
+                        >
+                          <div className={`w-8 h-8 rounded-xl bg-gradient-to-tr ${person.color} text-white font-bold text-xs flex items-center justify-center shrink-0`}>
                             {index + 1}
-                          </span>
+                          </div>
                           <input
                             type="text"
                             value={person.name}
                             onChange={(e) => handleNameChangeInput(person.id, e.target.value)}
-                            className="w-full bg-transparent text-sm font-medium outline-none"
+                            className="w-full bg-transparent text-sm font-medium text-slate-800 outline-none"
                           />
                           <button
                             type="button"
                             onClick={() => handleRemoveParticipantInput(person.id)}
-                            className="text-slate-400 hover:text-rose-600 p-1"
+                            className="p-1.5 text-slate-400 hover:text-rose-600 text-xs font-bold"
                           >
                             ✕
                           </button>
                         </div>
                       ))}
                     </div>
+
                     <div className="flex gap-2">
                       <input
                         type="text"
                         value={newFriendName}
                         onChange={(e) => setNewFriendName(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleAddParticipantInput()}
-                        placeholder="Nome de outra amiga..."
+                        placeholder="Adicionar mais uma amiga..."
                         className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
                       />
                       <button
                         type="button"
                         onClick={handleAddParticipantInput}
-                        className="px-4 py-2.5 rounded-xl bg-slate-800 text-white text-xs font-semibold"
+                        className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold"
                       >
                         + Adicionar
                       </button>
                     </div>
                   </div>
 
+                  {/* Ações */}
                   <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
-                    <p className="text-xs text-slate-500">🔒 Ao sair desta tela, o painel volta a ficar bloqueado por PIN automaticamente.</p>
-                    <div className="flex items-center gap-3 w-full sm:w-auto">
-                      <button
-                        type="button"
-                        onClick={() => navigateTo('lobby')}
-                        className="px-5 py-3 rounded-2xl border border-slate-200 text-slate-600 text-sm font-semibold"
-                      >
-                        Cancelar
-                      </button>
+                    <button
+                      type="button"
+                      onClick={() => navigateTo('lobby')}
+                      className="px-5 py-3 rounded-2xl border border-slate-200 text-slate-600 text-xs font-bold hover:bg-slate-50 w-full sm:w-auto"
+                    >
+                      Voltar ao Início
+                    </button>
+                    <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
+                      {eventData && (
+                        <button
+                          type="button"
+                          onClick={handleUpdateEventDetailsOnly}
+                          className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold w-full sm:w-auto"
+                        >
+                          Salvar Textos (Manter Sorteio)
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={handleGenerateDraw}
-                        className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-500 to-purple-600 text-white font-bold text-sm shadow-lg w-full sm:w-auto"
+                        className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-500 to-purple-600 hover:opacity-95 text-white font-bold text-sm shadow-lg w-full sm:w-auto"
                       >
-                        {eventData ? '🎲 Refazer Sorteio Secreto' : '🎲 Realizar Sorteio Secreto!'}
+                        ✨ {eventData ? 'Refazer Sorteio Secreto' : 'Realizar Sorteio Secreto!'}
                       </button>
                     </div>
                   </div>
@@ -1179,123 +1272,158 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
               </div>
             )}
 
-            {/* LOBBY QUANDO AINDA NÃO HÁ SORTEIO REALIZADO */}
-            {view === 'lobby' && !eventData && (
-              <div className="max-w-lg mx-auto bg-white rounded-3xl p-8 shadow-xl border border-rose-100 text-center space-y-4 animate-fadeIn">
-                <div className="w-16 h-16 mx-auto rounded-3xl bg-gradient-to-tr from-rose-500 to-purple-600 text-white flex items-center justify-center text-3xl shadow-lg">
-                  🎁
-                </div>
-                <h2 className="text-2xl font-black text-slate-800">Sorteio Ainda Não Iniciado</h2>
-                <p className="text-xs text-slate-500 leading-relaxed">
-                  O organizador precisa acessar o painel protegido por PIN para cadastrar os nomes das 8 amigas e realizar o sorteio secreto.
-                </p>
-                <button
-                  onClick={handleOpenOrganizerClick}
-                  className="px-6 py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-lg transition-all"
-                >
-                  🔒 Acessar Painel do Organizador (PIN)
-                </button>
-              </div>
-            )}
-
-            {/* LOBBY DAS PARTICIPANTES */}
-            {view === 'lobby' && eventData && (
+            {/* LOBBY PRINCIPAL DAS AMIGAS */}
+            {view === 'lobby' && (
               <div className="space-y-6 animate-fadeIn">
-                <div className="bg-white rounded-3xl p-6 shadow-md border border-rose-100 flex flex-col md:flex-row md:items-center justify-between gap-6">
-                  <div className="space-y-2">
-                    <span className="inline-block px-3 py-1 rounded-full bg-rose-50 text-rose-700 text-xs font-bold border border-rose-200">
-                      {eventData.drawMode === 'pairs'
-                        ? `Modo ${eventData.participants.length / 2} Duplas Fechadas`
-                        : 'Modo Roda Tradicional'}
-                    </span>
-                    <h2 className="text-2xl font-black text-slate-800">{eventData.title}</h2>
-                    <div className="flex flex-wrap items-center gap-3 text-xs font-medium text-slate-600 pt-1">
-                      {eventData.date && <span className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">📅 {eventData.date}</span>}
-                      {eventData.location && <span className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">📍 {eventData.location}</span>}
-                      {eventData.budget && <span className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">💰 {eventData.budget}</span>}
+                {!eventData?.participants ? (
+                  <div className="bg-white rounded-3xl p-8 text-center shadow-md border border-rose-100 max-w-lg mx-auto">
+                    <div className="w-16 h-16 rounded-2xl bg-rose-50 text-rose-500 flex items-center justify-center text-3xl mx-auto mb-4">
+                      🎁
                     </div>
+                    <h2 className="text-xl font-extrabold text-slate-800">Sorteio ainda não iniciado</h2>
+                    <p className="text-xs text-slate-500 mt-2 mb-6">
+                      O organizador precisa acessar o botão <strong>"🔒 Organizador"</strong> no topo da tela para cadastrar os nomes das amigas e disparar o sorteio secreto.
+                    </p>
+                    <button
+                      onClick={handleOpenOrganizerClick}
+                      className="px-6 py-3 rounded-2xl bg-gradient-to-r from-rose-500 to-purple-600 text-white font-bold text-xs shadow-md"
+                    >
+                      🔒 Acessar Painel do Organizador
+                    </button>
                   </div>
-                  <button
-                    onClick={handleCopyWhatsAppInvite}
-                    className="px-4 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs shadow-md shrink-0 transition-colors"
-                  >
-                    {copiedWhatsApp ? '✓ Convite Copiado!' : '📲 Copiar Texto p/ WhatsApp'}
-                  </button>
-                </div>
-
-                <div className="text-center py-2">
-                  <h3 className="text-lg font-bold text-slate-800">Quem é você na lista? 👇</h3>
-                  <p className="text-xs text-slate-500 mt-1">Toque no seu nome para entrar ou criar seu PIN secreto.</p>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-                  {eventData.participants.map(p => {
-                    const wishCount = p.wishlist?.length || 0;
-                    return (
-                      <div
-                        key={p.id}
-                        onClick={() => handleSelectParticipant(p)}
-                        className="cursor-pointer bg-white rounded-3xl p-5 shadow-xs hover:shadow-xl border border-rose-100 hover:border-rose-300 transition-all flex flex-col justify-between"
-                      >
-                        <div>
-                          <div className="flex items-center justify-between mb-4">
-                            <div className={`w-12 h-12 rounded-2xl bg-gradient-to-tr ${p.color} text-white font-black text-lg flex items-center justify-center shadow-md`}>
-                              {p.name.charAt(0).toUpperCase()}
-                            </div>
-                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-50 border border-slate-200 text-slate-600">
-                              {p.pin ? '🔒 Protegido' : '🔑 1º Acesso'}
+                ) : (
+                  <>
+                    {/* Resumo do Evento */}
+                    <div className="bg-white rounded-3xl p-6 shadow-md border border-rose-100 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                      <div className="space-y-2">
+                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-50 text-rose-700 text-xs font-bold border border-rose-200">
+                          {eventData.drawMode === 'pairs'
+                            ? `👩‍❤️‍👩 Modo ${eventData.participants.length / 2} Duplas Secretas`
+                            : '🎡 Modo Roda Tradicional'}
+                        </span>
+                        <h2 className="text-2xl font-extrabold text-slate-800">{eventData.title}</h2>
+                        <div className="flex flex-wrap items-center gap-3 text-xs font-medium text-slate-600 pt-1">
+                          {eventData.date && (
+                            <span className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">
+                              📅 {eventData.date}
                             </span>
-                          </div>
-                          <h4 className="font-bold text-base text-slate-800">{p.name}</h4>
-                          <div className="mt-3 pt-3 border-t border-slate-100 text-xs text-slate-500 space-y-1">
-                            <div className="flex justify-between">
-                              <span>Visualizado:</span>
-                              <span className={p.hasRevealed ? 'text-emerald-600 font-bold' : 'text-slate-400'}>
-                                {p.hasRevealed ? '✓ Sim' : 'Ainda não'}
-                              </span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span>Wishlist:</span>
-                              <span className={wishCount > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}>
-                                {wishCount === 0 ? 'Vazia' : `${wishCount} dicas`}
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mt-4 pt-2">
-                          <button className="w-full py-2.5 rounded-xl bg-rose-50 text-rose-700 font-bold text-xs hover:bg-rose-500 hover:text-white transition-colors">
-                            {p.pin ? 'Entrar com PIN' : 'Criar Meu PIN'}
-                          </button>
+                          )}
+                          {eventData.location && (
+                            <span className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">
+                              📍 {eventData.location}
+                            </span>
+                          )}
+                          {eventData.budget && (
+                            <span className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">
+                              💝 {eventData.budget}
+                            </span>
+                          )}
                         </div>
                       </div>
-                    );
-                  })}
-                </div>
+
+                      <button
+                        onClick={handleCopyWhatsAppInvite}
+                        className="px-4 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs shadow-md shrink-0 transition-all"
+                      >
+                        {copiedWhatsApp ? '✓ Convite Copiado!' : '📲 Copiar Convite p/ WhatsApp'}
+                      </button>
+                    </div>
+
+                    <div className="text-center max-w-xl mx-auto py-1">
+                      <h3 className="text-lg font-bold text-slate-800">Quem é você na lista? 👇</h3>
+                      <p className="text-xs text-slate-500 mt-1">
+                        Toque no seu nome para criar ou digitar seu PIN de 4 números, ver quem você tirou e montar sua Wishlist!
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                      {eventData.participants.map((person) => {
+                        const wishCount = person.wishlist?.length || 0;
+                        const hasPin = Boolean(person.pin);
+
+                        return (
+                          <div
+                            key={person.id}
+                            onClick={() => handleSelectParticipant(person)}
+                            className="group cursor-pointer bg-white rounded-3xl p-5 shadow-xs hover:shadow-xl border border-rose-100 hover:border-rose-300 transition-all flex flex-col justify-between"
+                          >
+                            <div>
+                              <div className="flex items-center justify-between mb-4">
+                                <div className={`w-12 h-12 rounded-2xl bg-gradient-to-tr ${person.color} text-white font-extrabold text-lg flex items-center justify-center shadow-md group-hover:scale-105 transition-transform`}>
+                                  {person.name.charAt(0).toUpperCase()}
+                                </div>
+                                <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border ${
+                                  hasPin
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                                }`}>
+                                  {hasPin ? '🔒 Protegido' : '🔑 1º Acesso'}
+                                </span>
+                              </div>
+
+                              <h4 className="font-bold text-base text-slate-800 group-hover:text-rose-600 transition-colors">
+                                {person.name}
+                              </h4>
+
+                              <div className="mt-3 space-y-1.5 pt-3 border-t border-slate-100 text-xs">
+                                <div className="flex items-center justify-between text-slate-500">
+                                  <span>Sorteado visto?</span>
+                                  <span className={person.hasRevealed ? 'font-semibold text-emerald-600' : 'text-slate-400'}>
+                                    {person.hasRevealed ? '✓ Sim' : 'Ainda não'}
+                                  </span>
+                                </div>
+                                <div className="flex items-center justify-between text-slate-500">
+                                  <span>Wishlist:</span>
+                                  <span className={wishCount > 0 ? 'font-semibold text-rose-600' : 'text-slate-400'}>
+                                    {wishCount === 0 ? 'Vazia' : `${wishCount} ${wishCount === 1 ? 'dica' : 'dicas'}`}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="mt-4 pt-2">
+                              <div className="w-full py-2.5 px-3 rounded-xl bg-rose-50 group-hover:bg-rose-500 text-rose-700 group-hover:text-white font-bold text-xs text-center transition-all">
+                                {hasPin ? 'Entrar com PIN' : 'Criar Meu PIN'}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
-            {/* AUTENTICAÇÃO PARTICIPANTE */}
+            {/* AUTENTICAÇÃO DA PARTICIPANTE */}
             {view === 'participant_auth' && currentParticipant && (
               <div className="max-w-md mx-auto bg-white rounded-3xl shadow-xl border border-rose-100 p-6 sm:p-8 animate-fadeIn">
                 <button
                   onClick={() => navigateTo('lobby')}
                   className="text-xs font-semibold text-slate-400 hover:text-rose-600 flex items-center gap-1 mb-6"
                 >
-                  ← Voltar para lista
+                  ← Voltar para a lista
                 </button>
-                <div className="text-center mb-6">
-                  <div className={`w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr ${currentParticipant.color} text-white font-black text-2xl flex items-center justify-center shadow-lg mb-3`}>
+
+                <div className="flex flex-col items-center text-center mb-6">
+                  <div className={`w-16 h-16 rounded-2xl bg-gradient-to-tr ${currentParticipant.color} text-white font-extrabold text-2xl flex items-center justify-center shadow-lg mb-3`}>
                     {currentParticipant.name.charAt(0).toUpperCase()}
                   </div>
-                  <h2 className="text-xl font-black text-slate-800">Olá, {currentParticipant.name}! 💖</h2>
-                  <p className="text-xs text-slate-500 mt-1">
-                    {!currentParticipant.pin ? 'Crie seu PIN de 4 números para este acesso.' : 'Digite seu PIN secreto de 4 números.'}
+                  <h2 className="text-xl font-extrabold text-slate-800">
+                    Olá, {currentParticipant.name}! 💖
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1 max-w-xs">
+                    {!currentParticipant.pin
+                      ? 'Crie seu PIN numérico de 4 dígitos para trancar seu cartão. Só você saberá essa senha!'
+                      : 'Digite seu PIN de 4 dígitos para ver sua amiga oculta e editar sua Wishlist.'}
                   </p>
                 </div>
 
                 <form onSubmit={handleAuthenticateParticipant} className="space-y-4">
                   <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5 text-center">
+                      {!currentParticipant.pin ? 'Crie um PIN de 4 números' : 'Seu PIN Secreto'}
+                    </label>
                     <input
                       type="password"
                       inputMode="numeric"
@@ -1303,14 +1431,16 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
                       value={pinInput}
                       onChange={(e) => setPinInput(e.target.value.replace(/\D/g, ''))}
                       placeholder="• • • •"
-                      className="w-full text-center tracking-[1em] text-2xl font-black py-3 rounded-2xl border-2 border-rose-200 focus:border-rose-500 outline-none"
+                      className="w-full text-center tracking-[1em] text-2xl font-extrabold py-3 px-4 rounded-2xl border-2 border-rose-200 focus:border-rose-500 outline-none"
                       autoFocus
                     />
                   </div>
 
                   {!currentParticipant.pin && (
                     <div>
-                      <label className="block text-xs font-bold text-slate-600 mb-1 text-center">Confirme o PIN</label>
+                      <label className="block text-xs font-bold text-slate-600 mb-1.5 text-center">
+                        Confirme seu PIN de 4 números
+                      </label>
                       <input
                         type="password"
                         inputMode="numeric"
@@ -1318,7 +1448,7 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
                         value={pinConfirm}
                         onChange={(e) => setPinConfirm(e.target.value.replace(/\D/g, ''))}
                         placeholder="• • • •"
-                        className="w-full text-center tracking-[1em] text-2xl font-black py-3 rounded-2xl border-2 border-rose-200 focus:border-rose-500 outline-none"
+                        className="w-full text-center tracking-[1em] text-2xl font-extrabold py-3 px-4 rounded-2xl border-2 border-rose-200 focus:border-rose-500 outline-none"
                       />
                     </div>
                   )}
@@ -1331,32 +1461,36 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
 
                   <button
                     type="submit"
-                    className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-purple-600 text-white font-bold text-sm shadow-lg hover:opacity-95 transition-opacity"
+                    className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-purple-600 text-white font-bold text-sm shadow-lg"
                   >
-                    {!currentParticipant.pin ? 'Salvar PIN e Abrir' : 'Acessar Meu Amigo Secreto'}
+                    {!currentParticipant.pin ? 'Salvar PIN e Ver Meu Sorteio' : 'Entrar no Meu Painel'}
                   </button>
                 </form>
               </div>
             )}
 
-            {/* ÁREA DA PARTICIPANTE */}
+            {/* ÁREA LOGADA DA PARTICIPANTE */}
             {view === 'participant_area' && currentParticipant && (
               <div className="space-y-6 animate-fadeIn">
-                <div className="bg-white rounded-3xl p-5 shadow-sm border border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-12 h-12 rounded-2xl bg-gradient-to-tr ${currentParticipant.color} text-white font-black text-xl flex items-center justify-center shadow-md`}>
+                <div className="bg-white rounded-3xl p-5 shadow-xs border border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3.5">
+                    <div className={`w-12 h-12 rounded-2xl bg-gradient-to-tr ${currentParticipant.color} text-white font-extrabold text-xl flex items-center justify-center shadow-md`}>
                       {currentParticipant.name.charAt(0).toUpperCase()}
                     </div>
                     <div>
-                      <span className="text-[11px] font-bold text-rose-500 uppercase tracking-wider">Área Privada</span>
-                      <h2 className="text-xl font-black text-slate-800">Painel de {currentParticipant.name}</h2>
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-rose-500">
+                        Área Secreta Individual
+                      </span>
+                      <h2 className="text-xl font-extrabold text-slate-800">
+                        Painel da {currentParticipant.name}
+                      </h2>
                     </div>
                   </div>
 
                   <div className="flex bg-rose-50 p-1.5 rounded-2xl border border-rose-100">
                     <button
                       onClick={() => setActiveTab('reveal')}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                      className={`flex-1 sm:flex-initial px-4 py-2 rounded-xl text-xs font-bold transition-all ${
                         activeTab === 'reveal' ? 'bg-white text-rose-600 shadow-xs' : 'text-slate-600'
                       }`}
                     >
@@ -1364,7 +1498,7 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
                     </button>
                     <button
                       onClick={() => setActiveTab('wishlist')}
-                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                      className={`flex-1 sm:flex-initial px-4 py-2 rounded-xl text-xs font-bold transition-all ${
                         activeTab === 'wishlist' ? 'bg-white text-purple-700 shadow-xs' : 'text-slate-600'
                       }`}
                     >
@@ -1373,6 +1507,7 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
                   </div>
                 </div>
 
+                {/* ABA 1: REVELAÇÃO */}
                 {activeTab === 'reveal' && drawnParticipant && (
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                     <div className="lg:col-span-5 bg-white rounded-3xl p-6 sm:p-8 shadow-md border border-rose-100 flex flex-col items-center justify-center text-center">
@@ -1386,89 +1521,116 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
                           >
                             🎁
                           </div>
-                          <h3 className="text-lg font-black text-slate-800 mb-2">Descubra sua amiga!</h3>
+                          <h3 className="text-lg font-extrabold text-slate-800 mb-2">
+                            Pronta para descobrir sua amiga oculta?
+                          </h3>
                           <p className="text-xs text-slate-500 max-w-xs mb-6">
-                            Nenhuma amiga está olhando para a tela do seu celular? 🤫
+                            Certifique-se de que ninguém está espiando a tela do seu celular agora! 🤫
                           </p>
                           <button
                             onClick={handleOpenGiftBox}
-                            className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-purple-600 text-white font-bold text-sm shadow-lg hover:opacity-95"
+                            className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-purple-600 text-white font-bold text-sm shadow-lg"
                           >
-                            ✨ Abrir Caixa de Presente
+                            ✨ Toque para Abrir!
                           </button>
                         </div>
                       ) : (
                         <div className="py-4 flex flex-col items-center animate-fadeIn w-full">
-                          <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-bold mb-3">
+                          <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-bold mb-4">
                             🎉 Sorteio Revelado!
                           </span>
-                          <p className="text-xs font-semibold uppercase text-slate-400">Sua Amiga Oculta é:</p>
-                          <div className={`w-20 h-20 rounded-3xl bg-gradient-to-tr ${drawnParticipant.color} text-white font-black text-3xl flex items-center justify-center shadow-xl my-3`}>
+                          <p className="text-xs font-semibold uppercase tracking-widest text-slate-400 mb-2">
+                            Você tirou:
+                          </p>
+                          <div className={`w-20 h-20 rounded-3xl bg-gradient-to-tr ${drawnParticipant.color} text-white font-extrabold text-3xl flex items-center justify-center shadow-xl my-3`}>
                             {drawnParticipant.name.charAt(0).toUpperCase()}
                           </div>
-                          <h3 className="text-3xl font-black bg-gradient-to-r from-rose-600 to-purple-600 bg-clip-text text-transparent">
+                          <h3 className="text-3xl font-black bg-gradient-to-r from-rose-600 to-purple-600 bg-clip-text text-transparent mt-1">
                             {drawnParticipant.name}
                           </h3>
-                          {eventData.drawMode === 'pairs' && (
-                            <p className="text-xs text-rose-600 bg-rose-50 px-3 py-1.5 rounded-xl font-medium mt-3 border border-rose-100">
-                              💝 Vocês formam uma das 4 duplas secretas!
-                            </p>
-                          )}
                           <button
                             onClick={() => setGiftBoxStage(0)}
-                            className="mt-6 text-xs text-slate-400 hover:text-slate-600"
+                            className="mt-6 text-xs font-semibold text-slate-400 hover:text-slate-600"
                           >
-                            🙈 Ocultar nome novamente
+                            🙈 Esconder nome novamente
                           </button>
                         </div>
                       )}
                     </div>
 
+                    {/* Wishlist da Amiga Sorteada */}
                     <div className="lg:col-span-7 bg-white rounded-3xl p-6 sm:p-8 shadow-md border border-rose-100">
                       {giftBoxStage < 2 ? (
                         <div className="h-full flex flex-col items-center justify-center text-center py-12 text-slate-400">
-                          <p className="text-sm font-semibold">Abra a caixa para ver a Wishlist da sua amiga!</p>
+                          <div className="text-3xl mb-2">🔒</div>
+                          <p className="text-sm font-semibold text-slate-500">
+                            Abra o presente ao lado para ver a Wishlist e medidas da sua amiga oculta!
+                          </p>
                         </div>
                       ) : (
                         <div className="space-y-5 animate-fadeIn">
-                          <div className="border-b border-slate-100 pb-3">
-                            <span className="text-xs font-bold uppercase text-purple-600">Dicas em Tempo Real</span>
-                            <h3 className="text-xl font-black text-slate-800">Wishlist de {drawnParticipant.name} ✨</h3>
+                          <div className="border-b border-slate-100 pb-4">
+                            <span className="text-xs font-bold uppercase tracking-wider text-purple-600">
+                              Dicas em Tempo Real
+                            </span>
+                            <h3 className="text-xl font-extrabold text-slate-800">
+                              Wishlist da {drawnParticipant.name} ✨
+                            </h3>
                           </div>
 
                           {(drawnParticipant.sizes?.clothes || drawnParticipant.sizes?.shoes || drawnParticipant.sizes?.favColor || drawnParticipant.sizes?.avoid) && (
-                            <div className="space-y-2 bg-rose-50/60 p-3.5 rounded-2xl border border-rose-100">
-                              <div className="grid grid-cols-3 gap-2 text-xs">
-                                <div><span className="text-[10px] text-slate-400 block font-bold uppercase">Roupa</span><strong>{drawnParticipant.sizes?.clothes || '-'}</strong></div>
-                                <div><span className="text-[10px] text-slate-400 block font-bold uppercase">Calçado</span><strong>{drawnParticipant.sizes?.shoes || '-'}</strong></div>
-                                <div><span className="text-[10px] text-slate-400 block font-bold uppercase">Cores</span><strong>{drawnParticipant.sizes?.favColor || '-'}</strong></div>
+                            <div className="space-y-2.5">
+                              <div className="grid grid-cols-3 gap-2.5 bg-rose-50/60 p-3.5 rounded-2xl border border-rose-100">
+                                <div>
+                                  <span className="block text-[10px] font-bold uppercase text-slate-400">Roupa</span>
+                                  <span className="text-xs font-bold text-slate-700">{drawnParticipant.sizes?.clothes || '-'}</span>
+                                </div>
+                                <div>
+                                  <span className="block text-[10px] font-bold uppercase text-slate-400">Calçado</span>
+                                  <span className="text-xs font-bold text-slate-700">{drawnParticipant.sizes?.shoes || '-'}</span>
+                                </div>
+                                <div>
+                                  <span className="block text-[10px] font-bold uppercase text-slate-400">Cores</span>
+                                  <span className="text-xs font-bold text-slate-700">{drawnParticipant.sizes?.favColor || '-'}</span>
+                                </div>
                               </div>
                               {drawnParticipant.sizes?.avoid && (
-                                <p className="text-xs text-amber-800 pt-2 border-t border-rose-100">
-                                  <strong>🚫 Evitar:</strong> {drawnParticipant.sizes.avoid}
-                                </p>
+                                <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-900">
+                                  <strong>🚫 O que evitar:</strong> {drawnParticipant.sizes.avoid}
+                                </div>
                               )}
                             </div>
                           )}
 
                           {(!drawnParticipant.wishlist || drawnParticipant.wishlist.length === 0) ? (
-                            <p className="text-sm text-slate-500 py-6 text-center">A {drawnParticipant.name} ainda não adicionou itens na lista.</p>
+                            <div className="text-center py-8 bg-slate-50 rounded-2xl border border-dashed border-slate-200 p-6">
+                              <p className="text-sm font-semibold text-slate-600">
+                                A {drawnParticipant.name} ainda não adicionou presentes na Wishlist!
+                              </p>
+                            </div>
                           ) : (
                             <div className="space-y-3">
-                              {drawnParticipant.wishlist.map(item => (
-                                <div key={item.id} className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">{item.category}</span>
+                              {drawnParticipant.wishlist.map((item) => (
+                                <div key={item.id} className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-700">
+                                      {item.category}
+                                    </span>
                                     {item.priceRange && (
-                                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                        💰 {item.priceRange}
+                                      <span className="text-[11px] font-bold text-emerald-700">
+                                        {item.priceRange}
                                       </span>
                                     )}
                                   </div>
-                                  <h4 className="font-bold text-sm text-slate-800 mt-1">{item.title}</h4>
-                                  {item.notes && <p className="text-xs text-slate-500 mt-0.5">{item.notes}</p>}
+                                  <h4 className="font-bold text-sm text-slate-800">{item.title}</h4>
+                                  {item.notes && <p className="text-xs text-slate-500">{item.notes}</p>}
                                   {item.link && (
-                                    <a href={item.link.startsWith('http') ? item.link : `https://${item.link}`} target="_blank" rel="noopener noreferrer" className="text-xs text-rose-600 font-bold hover:underline block mt-1">
+                                    <a
+                                      href={item.link.startsWith('http') ? item.link : `https://${item.link}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="inline-block text-xs font-bold text-rose-600 hover:underline pt-1"
+                                    >
                                       🔗 Ver link da loja
                                     </a>
                                   )}
@@ -1482,145 +1644,174 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
                   </div>
                 )}
 
+                {/* ABA 2: MINHA WISHLIST */}
                 {activeTab === 'wishlist' && (
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fadeIn">
                     <div className="lg:col-span-5 space-y-6">
                       <div className="bg-white rounded-3xl p-6 shadow-md border border-rose-100 space-y-4">
-                        <h3 className="text-base font-black text-slate-800">Meus Tamanhos & Dicas</h3>
-                        <div className="grid grid-cols-3 gap-2">
+                        <h3 className="text-base font-extrabold text-slate-800">
+                          💖 Meus Tamanhos e Preferências
+                        </h3>
+                        <div className="grid grid-cols-3 gap-2.5">
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-500">Roupa</label>
+                            <label className="block text-[11px] font-bold text-slate-600 mb-1">Roupa</label>
                             <input
                               type="text"
                               value={personalSizes.clothes}
                               onChange={(e) => setPersonalSizes({ ...personalSizes, clothes: e.target.value })}
-                              placeholder="P / 38"
-                              className="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs"
+                              placeholder="P / M / 38"
+                              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs outline-none"
                             />
                           </div>
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-500">Calçado</label>
+                            <label className="block text-[11px] font-bold text-slate-600 mb-1">Calçado</label>
                             <input
                               type="text"
                               value={personalSizes.shoes}
                               onChange={(e) => setPersonalSizes({ ...personalSizes, shoes: e.target.value })}
-                              placeholder="36"
-                              className="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs"
+                              placeholder="36 / 37"
+                              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs outline-none"
                             />
                           </div>
                           <div>
-                            <label className="block text-[10px] font-bold text-slate-500">Cores</label>
+                            <label className="block text-[11px] font-bold text-slate-600 mb-1">Cores</label>
                             <input
                               type="text"
                               value={personalSizes.favColor}
                               onChange={(e) => setPersonalSizes({ ...personalSizes, favColor: e.target.value })}
-                              placeholder="Rosa"
-                              className="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs"
+                              placeholder="Rosa, Ouro"
+                              className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs outline-none"
                             />
                           </div>
                         </div>
+
                         <div>
-                          <label className="block text-[10px] font-bold text-amber-700">O que NÃO quero ganhar / alergias</label>
+                          <label className="block text-[11px] font-bold text-amber-700 mb-1">
+                            🚫 O que NÃO quero ganhar / Restrições
+                          </label>
                           <input
                             type="text"
                             value={personalSizes.avoid}
                             onChange={(e) => setPersonalSizes({ ...personalSizes, avoid: e.target.value })}
-                            placeholder="Perfumes doces, bijuteria prateada..."
-                            className="w-full px-2 py-1.5 rounded-lg border border-amber-200 bg-amber-50/30 text-xs"
+                            placeholder="Ex: Perfumes doces, bijuteria prateada..."
+                            className="w-full px-3 py-2 rounded-xl border border-amber-200 bg-amber-50/30 text-xs outline-none"
                           />
                         </div>
+
                         <button
                           type="button"
                           onClick={handleSavePersonalSizes}
-                          className="w-full py-2 rounded-xl bg-rose-50 text-rose-700 font-bold text-xs"
+                          className="w-full py-2.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 font-bold text-xs"
                         >
-                          {savingSizes ? '✓ Salvo!' : 'Salvar Preferências'}
+                          {savingSizes ? '✓ Salvo na Nuvem!' : 'Salvar Tamanhos'}
                         </button>
                       </div>
 
-                      <form onSubmit={handleAddWish} className="bg-white rounded-3xl p-6 shadow-md border border-rose-100 space-y-3">
-                        <h3 className="text-base font-black text-slate-800">+ Adicionar Presente</h3>
-                        <input
-                          type="text"
-                          value={newWishItem}
-                          onChange={(e) => setNewWishItem(e.target.value)}
-                          placeholder="Nome do presente..."
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs outline-none"
-                          required
-                        />
-                        <div className="grid grid-cols-2 gap-2">
-                          <select
-                            value={newWishCategory}
-                            onChange={(e) => setNewWishCategory(e.target.value)}
-                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white"
-                          >
-                            <option>Beleza & Skincare</option>
-                            <option>Roupas & Moda</option>
-                            <option>Acessórios & Joias</option>
-                            <option>Perfumaria & Velas</option>
-                            <option>Livros & Papelaria</option>
-                            <option>Decoração & Casa</option>
-                            <option>Outros</option>
-                          </select>
+                      <form onSubmit={handleAddWish} className="bg-white rounded-3xl p-6 shadow-md border border-rose-100 space-y-4">
+                        <h3 className="text-base font-extrabold text-slate-800">
+                          ➕ Adicionar Desejo na Lista
+                        </h3>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-600 mb-1">Presente desejado</label>
                           <input
                             type="text"
-                            value={newWishPrice}
-                            onChange={(e) => setNewWishPrice(e.target.value)}
-                            placeholder="Faixa (ex: R$ 90)"
-                            className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs"
+                            value={newWishItem}
+                            onChange={(e) => setNewWishItem(e.target.value)}
+                            placeholder="Ex: Hidratante, Livro, Colar..."
+                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs outline-none"
+                            required
                           />
                         </div>
-                        <input
-                          type="text"
-                          value={newWishNotes}
-                          onChange={(e) => setNewWishNotes(e.target.value)}
-                          placeholder="Detalhes, cor ou marca..."
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs"
-                        />
-                        <input
-                          type="text"
-                          value={newWishLink}
-                          onChange={(e) => setNewWishLink(e.target.value)}
-                          placeholder="Link da loja (opcional)..."
-                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs"
-                        />
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div>
+                            <label className="block text-xs font-bold text-slate-600 mb-1">Categoria</label>
+                            <select
+                              value={newWishCategory}
+                              onChange={(e) => setNewWishCategory(e.target.value)}
+                              className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs bg-white"
+                            >
+                              <option>Beleza & Skincare</option>
+                              <option>Roupas & Moda</option>
+                              <option>Acessórios & Joias</option>
+                              <option>Perfumaria & Velas</option>
+                              <option>Livros & Papelaria</option>
+                              <option>Decoração & Casa</option>
+                              <option>Outros</option>
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-xs font-bold text-slate-600 mb-1">Faixa de Preço</label>
+                            <input
+                              type="text"
+                              value={newWishPrice}
+                              onChange={(e) => setNewWishPrice(e.target.value)}
+                              placeholder="Ex: ~R$ 90"
+                              className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-xs outline-none"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-600 mb-1">Detalhes / Cor / Marca (opcional)</label>
+                          <textarea
+                            rows={2}
+                            value={newWishNotes}
+                            onChange={(e) => setNewWishNotes(e.target.value)}
+                            placeholder="Ex: Aroma cítrico, tamanho M..."
+                            className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-600 mb-1">Link da loja (opcional)</label>
+                          <input
+                            type="text"
+                            value={newWishLink}
+                            onChange={(e) => setNewWishLink(e.target.value)}
+                            placeholder="https://..."
+                            className="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs outline-none"
+                          />
+                        </div>
                         <button
                           type="submit"
-                          className="w-full py-2.5 rounded-xl bg-purple-600 text-white font-bold text-xs shadow-md"
+                          className="w-full py-3 rounded-xl bg-gradient-to-r from-purple-600 to-rose-500 text-white font-bold text-xs shadow-md"
                         >
-                          Adicionar à Minha Wishlist
+                          + Incluir na Minha Wishlist
                         </button>
                       </form>
                     </div>
 
                     <div className="lg:col-span-7 bg-white rounded-3xl p-6 sm:p-8 shadow-md border border-rose-100">
-                      <h3 className="text-xl font-black text-slate-800 mb-4">Minha Wishlist ({currentParticipant.wishlist?.length || 0})</h3>
+                      <h3 className="text-xl font-extrabold text-slate-800 border-b border-slate-100 pb-4 mb-5">
+                        Minha Lista de Desejos ({currentParticipant.wishlist?.length || 0})
+                      </h3>
                       {(!currentParticipant.wishlist || currentParticipant.wishlist.length === 0) ? (
-                        <p className="text-sm text-slate-500 py-12 text-center">Sua lista está vazia! Adicione dicas para sua amiga oculta.</p>
+                        <div className="text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-200 p-6">
+                          <p className="text-sm font-semibold text-slate-600">Sua Wishlist ainda está vazia!</p>
+                          <p className="text-xs text-slate-400 mt-1">Cadastre sugestões ao lado para ajudar a amiga que tirou você.</p>
+                        </div>
                       ) : (
                         <div className="space-y-3">
-                          {currentParticipant.wishlist.map(item => (
-                            <div key={item.id} className="p-3.5 rounded-2xl bg-rose-50/40 border border-rose-100 flex items-start justify-between">
-                              <div>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">{item.category}</span>
-                                  {item.priceRange && (
-                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                                      💰 {item.priceRange}
-                                    </span>
-                                  )}
-                                </div>
-                                <h4 className="font-bold text-sm text-slate-800 mt-1">{item.title}</h4>
+                          {currentParticipant.wishlist.map((item) => (
+                            <div key={item.id} className="p-4 rounded-2xl bg-rose-50/40 border border-rose-100 flex items-start justify-between gap-3">
+                              <div className="space-y-1">
+                                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
+                                  {item.category}
+                                </span>
+                                <h4 className="font-bold text-sm text-slate-800">{item.title}</h4>
                                 {item.notes && <p className="text-xs text-slate-500">{item.notes}</p>}
                                 {item.link && (
-                                  <a href={item.link.startsWith('http') ? item.link : `https://${item.link}`} target="_blank" rel="noopener noreferrer" className="text-xs text-purple-600 font-bold hover:underline block mt-1">
+                                  <a
+                                    href={item.link.startsWith('http') ? item.link : `https://${item.link}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-block text-xs font-bold text-purple-600 hover:underline pt-1"
+                                  >
                                     🔗 Link do produto
                                   </a>
                                 )}
                               </div>
                               <button
                                 onClick={() => handleRemoveWish(item.id)}
-                                className="text-slate-400 hover:text-rose-600 p-1"
+                                className="p-1.5 text-slate-400 hover:text-rose-600 text-xs font-bold"
                               >
                                 ✕
                               </button>
@@ -1635,27 +1826,30 @@ Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tiro
             )}
           </main>
 
-          {/* Modal */}
+          {/* MODAL */}
           {modalConfig && (
             <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
               <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-rose-100 animate-fadeIn">
-                <h3 className="text-lg font-black text-slate-800 mb-2">{modalConfig.title}</h3>
+                <h3 className="text-lg font-extrabold text-slate-800 mb-2">{modalConfig.title}</h3>
                 <p className="text-xs text-slate-600 leading-relaxed mb-6">{modalConfig.message}</p>
                 <div className="flex items-center justify-end gap-2">
                   {modalConfig.type === 'confirm' && (
                     <button
                       onClick={() => setModalConfig(null)}
-                      className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-bold"
+                      className="px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 text-xs font-bold"
                     >
                       Cancelar
                     </button>
                   )}
                   <button
                     onClick={() => {
-                      if (modalConfig.onConfirm) modalConfig.onConfirm();
-                      else setModalConfig(null);
+                      if (modalConfig.onConfirm) {
+                        modalConfig.onConfirm();
+                      } else {
+                        setModalConfig(null);
+                      }
                     }}
-                    className="px-5 py-2 rounded-xl bg-rose-500 text-white text-xs font-bold shadow-md"
+                    className="px-5 py-2.5 rounded-xl bg-rose-500 hover:bg-rose-600 text-white text-xs font-bold"
                   >
                     Confirmar
                   </button>
