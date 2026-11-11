@@ -1,0 +1,1406 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Amigo Oculto das Meninas ✨</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React & ReactDOM (UMD) -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <!-- Babel para interpretar JSX diretamente no navegador -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Firebase SDK Oficial (App, Auth e Realtime Database) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+
+  <!-- Lucide Icons (Vanilla) -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <style>
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fadeIn {
+      animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+  </style>
+</head>
+<body class="bg-gradient-to-br from-rose-50 via-pink-50 to-purple-100 min-h-screen text-slate-800 font-sans antialiased selection:bg-rose-200">
+  <div id="root"></div>
+
+  <!-- Script da Aplicação -->
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // Configuração oficial do Firebase Realtime Database
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyC5Km-YZszcZ0s-JB7Nzgxm0QF8GM8eJvk",
+      authDomain: "amigo-secreto-das-meninas.firebaseapp.com",
+      databaseURL: "https://amigo-secreto-das-meninas-default-rtdb.firebaseio.com",
+      projectId: "amigo-secreto-das-meninas",
+      storageBucket: "amigo-secreto-das-meninas.firebasestorage.app",
+      messagingSenderId: "480415836167",
+      appId: "1:480415836167:web:b9b8bb7519c27e2ded62a2"
+    };
+
+    // Inicializa o Firebase SDK com segurança
+    if (!firebase.apps.length) {
+      firebase.initializeApp(FIREBASE_CONFIG);
+    }
+    const rtdb = firebase.database();
+    const auth = firebase.auth();
+
+    const DB_URL = "https://amigo-secreto-das-meninas-default-rtdb.firebaseio.com/amigo_oculto_grupo.json";
+    const LOCAL_STORAGE_KEY = "amigo_oculto_meninas_backup_v1";
+
+    const INITIAL_NAMES = [
+      'Mariana', 'Beatriz', 'Camila', 'Juliana',
+      'Fernanda', 'Larissa', 'Amanda', 'Carolina'
+    ];
+
+    const AVATAR_COLORS = [
+      'from-rose-400 to-pink-500',
+      'from-purple-400 to-indigo-500',
+      'from-amber-400 to-orange-400',
+      'from-emerald-400 to-teal-500',
+      'from-fuchsia-400 to-purple-500',
+      'from-sky-400 to-blue-500',
+      'from-pink-400 to-rose-500',
+      'from-violet-400 to-purple-600'
+    ];
+
+    function App() {
+      const [loading, setLoading] = useState(true);
+      const [eventData, setEventData] = useState(null);
+      const [dbStatus, setDbStatus] = useState('conectando'); // 'ok' | 'erro' | 'conectando'
+      const [dbErrorMsg, setDbErrorMsg] = useState('');
+
+      const [view, setView] = useState('lobby'); // 'lobby' | 'admin_auth' | 'setup' | 'participant_auth' | 'participant_area'
+      const [selectedParticipantId, setSelectedParticipantId] = useState(null);
+      const [activeTab, setActiveTab] = useState('reveal'); // 'reveal' | 'wishlist'
+
+      // Admin
+      const [adminPinInput, setAdminPinInput] = useState('');
+      const [adminPinError, setAdminPinError] = useState('');
+      const [isAdminUnlocked, setIsAdminUnlocked] = useState(false);
+
+      // Setup
+      const [title, setTitle] = useState('Amigo Oculto das Meninas ✨');
+      const [date, setDate] = useState('20/12 às 20h');
+      const [location, setLocation] = useState('Restaurante / Casa da Amiga');
+      const [budget, setBudget] = useState('R$ 80 a R$ 120');
+      const [adminPassConfig, setAdminPassConfig] = useState('admin123');
+      const [drawMode, setDrawMode] = useState('pairs');
+      const [participantsInput, setParticipantsInput] = useState(
+        INITIAL_NAMES.map((name, i) => ({
+          id: `p_${i + 1}`,
+          name,
+          color: AVATAR_COLORS[i % AVATAR_COLORS.length]
+        }))
+      );
+      const [newFriendName, setNewFriendName] = useState('');
+
+      // Participante
+      const [pinInput, setPinInput] = useState('');
+      const [pinConfirm, setPinConfirm] = useState('');
+      const [pinError, setPinError] = useState('');
+
+      // Revelação
+      const [giftBoxStage, setGiftBoxStage] = useState(0);
+      const [copiedWhatsApp, setCopiedWhatsApp] = useState(false);
+
+      // Wishlist
+      const [newWishItem, setNewWishItem] = useState('');
+      const [newWishCategory, setNewWishCategory] = useState('Beleza & Skincare');
+      const [newWishNotes, setNewWishNotes] = useState('');
+      const [newWishLink, setNewWishLink] = useState('');
+      const [personalSizes, setPersonalSizes] = useState({
+        clothes: '', shoes: '', favColor: '', avoid: ''
+      });
+      const [savingSizes, setSavingSizes] = useState(false);
+
+      const [modalConfig, setModalConfig] = useState(null);
+      const [copiedRules, setCopiedRules] = useState(false);
+
+      const applyLoadedData = (data) => {
+        if (data && data.participants) {
+          setEventData(data);
+          setTitle(data.title || 'Amigo Oculto das Meninas ✨');
+          setDate(data.date || '');
+          setLocation(data.location || '');
+          setBudget(data.budget || '');
+          setDrawMode(data.drawMode || 'pairs');
+          setAdminPassConfig(data.adminPass || 'admin123');
+          try {
+            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(data));
+          } catch (e) {}
+        } else {
+          setEventData(null);
+          setIsAdminUnlocked(true);
+          setView('setup');
+        }
+      };
+
+      // Conexão em tempo real via SDK do Firebase + Fallback gracioso sem console.error
+      const fetchData = async () => {
+        try {
+          // Tenta autenticar anonimamente caso a regra seja auth != null
+          let idToken = null;
+          try {
+            if (!auth.currentUser) {
+              await auth.signInAnonymously();
+            }
+            if (auth.currentUser) {
+              idToken = await auth.currentUser.getIdToken();
+            }
+          } catch (authErr) {
+            // Ignora silenciosamente se o login anônimo não estiver ativo no console
+          }
+
+          const urlWithAuth = idToken ? `${DB_URL}?auth=${idToken}` : DB_URL;
+          const res = await fetch(urlWithAuth);
+
+          if (res.status === 401 || res.status === 403) {
+            setDbStatus('erro');
+            setDbErrorMsg('Falta clicar em "Publicar" na aba Regras do seu Firebase Realtime Database (Erro 401). Enquanto isso, o modo local está ativo.');
+            const localSaved = localStorage.getItem(LOCAL_STORAGE_KEY);
+            if (localSaved) {
+              applyLoadedData(JSON.parse(localSaved));
+            } else if (!eventData) {
+              setIsAdminUnlocked(true);
+              setView('setup');
+            }
+            return;
+          }
+
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+          }
+
+          const data = await res.json();
+          setDbStatus('ok');
+          setDbErrorMsg('');
+          applyLoadedData(data);
+        } catch (err) {
+          setDbStatus('erro');
+          setDbErrorMsg('Conexão pendente com o Firebase. Verifique se clicou em "Publicar" nas Regras do Realtime Database.');
+          const localSaved = localStorage.getItem(LOCAL_STORAGE_KEY);
+          if (localSaved && !eventData) {
+            applyLoadedData(JSON.parse(localSaved));
+          }
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const syncToDatabase = async (payload) => {
+        // Salva imediatamente no backup local para que nada seja perdido
+        try {
+          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload));
+        } catch (e) {}
+        setEventData(payload);
+
+        try {
+          let idToken = null;
+          if (auth.currentUser) {
+            try { idToken = await auth.currentUser.getIdToken(); } catch (e) {}
+          }
+          const urlWithAuth = idToken ? `${DB_URL}?auth=${idToken}` : DB_URL;
+
+          const res = await fetch(urlWithAuth, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          if (res.status === 401 || res.status === 403) {
+            setDbStatus('erro');
+            setDbErrorMsg('Salvo neste aparelho! Para sincronizar com os celulares das amigas, clique em "Publicar" nas Regras do Firebase.');
+            setModalConfig({
+              title: 'Salvo localmente (Falta Publicar Regra 401)',
+              message: 'Seus dados foram salvos neste navegador! Porém, o Firebase retornou HTTP 401 porque as Regras no painel do Firebase ainda não foram publicadas como true. Clique em "Como Resolver 401" no topo para liberar a nuvem.',
+              type: 'info'
+            });
+            return true;
+          }
+
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const updated = await res.json();
+          setEventData(updated);
+          setDbStatus('ok');
+          setDbErrorMsg('');
+          return true;
+        } catch (err) {
+          setDbStatus('erro');
+          return true;
+        }
+      };
+
+      useEffect(() => {
+        fetchData();
+        // Escuta via SDK WebSocket se permitido + polling leve
+        const dbRef = rtdb.ref('amigo_oculto_grupo');
+        const onValueChange = dbRef.on(
+          'value',
+          (snapshot) => {
+            setDbStatus('ok');
+            setDbErrorMsg('');
+            if (snapshot.exists()) {
+              applyLoadedData(snapshot.val());
+            }
+            setLoading(false);
+          },
+          () => {
+            // Silencioso caso ainda esteja 401
+          }
+        );
+
+        const interval = setInterval(fetchData, 6000);
+        return () => {
+          dbRef.off('value', onValueChange);
+          clearInterval(interval);
+        };
+      }, []);
+
+      const currentParticipant = eventData?.participants?.find(p => p.id === selectedParticipantId);
+      const drawnParticipant = eventData?.participants?.find(p => p.id === currentParticipant?.drawnId);
+
+      useEffect(() => {
+        if (currentParticipant) {
+          setPersonalSizes({
+            clothes: currentParticipant.sizes?.clothes || '',
+            shoes: currentParticipant.sizes?.shoes || '',
+            favColor: currentParticipant.sizes?.favColor || '',
+            avoid: currentParticipant.sizes?.avoid || ''
+          });
+        }
+      }, [selectedParticipantId, currentParticipant?.id]);
+
+      const handleTestDatabaseWrite = async () => {
+        try {
+          let idToken = null;
+          try {
+            if (!auth.currentUser) await auth.signInAnonymously();
+            if (auth.currentUser) idToken = await auth.currentUser.getIdToken();
+          } catch (e) {}
+
+          const testUrl = "https://amigo-secreto-das-meninas-default-rtdb.firebaseio.com/teste_conexao.json" + (idToken ? `?auth=${idToken}` : '');
+          const res = await fetch(testUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'Conectado com sucesso!', timestamp: new Date().toISOString() })
+          });
+
+          if (res.status === 401 || res.status === 403) {
+            setDbStatus('erro');
+            setModalConfig({
+              title: '🔒 Erro 401: Falta Publicar as Regras no Firebase',
+              message: 'O Firebase bloqueou o acesso (HTTP 401) porque as regras ainda estão fechadas. No painel do Firebase, vá em "Realtime Database" > aba "Regras", cole {"rules":{".read":true,".write":true}} e clique no botão azul "Publicar"!',
+              type: 'info'
+            });
+            return;
+          }
+
+          if (!res.ok) throw new Error(`Status ${res.status}`);
+          setDbStatus('ok');
+          setDbErrorMsg('');
+          fetchData();
+          setModalConfig({
+            title: '🔥 Banco 100% Conectado!',
+            message: 'A leitura e gravação no Firebase Realtime Database estão operando normalmente em tempo real!',
+            type: 'info'
+          });
+        } catch (err) {
+          setModalConfig({
+            title: 'Aviso de Conexão no Banco',
+            message: `Não foi possível conectar (${err.message}). Verifique se você clicou no botão azul "Publicar" na aba Regras do Realtime Database.`,
+            type: 'info'
+          });
+        }
+      };
+
+      const handleCopyFirebaseRules = () => {
+        const rulesText = `{\n  "rules": {\n    ".read": true,\n    ".write": true\n  }\n}`;
+        try {
+          const textArea = document.createElement("textarea");
+          textArea.value = rulesText;
+          document.body.appendChild(textArea);
+          textArea.select();
+          document.execCommand("copy");
+          document.body.removeChild(textArea);
+          setCopiedRules(true);
+          setTimeout(() => setCopiedRules(false), 3000);
+        } catch (e) {}
+      };
+
+      const handleOpenOrganizerClick = () => {
+        if (eventData?.participants) {
+          setParticipantsInput(eventData.participants.map(p => ({
+            id: p.id,
+            name: p.name,
+            color: p.color
+          })));
+        }
+        if (!eventData || isAdminUnlocked) {
+          setView(view === 'setup' ? 'lobby' : 'setup');
+        } else {
+          setAdminPinInput('');
+          setAdminPinError('');
+          setView('admin_auth');
+        }
+      };
+
+      const handleVerifyAdminPassword = (e) => {
+        e.preventDefault();
+        const expectedPass = eventData?.adminPass || 'admin123';
+        if (adminPinInput.trim() === expectedPass) {
+          setIsAdminUnlocked(true);
+          setAdminPinError('');
+          setView('setup');
+        } else {
+          setAdminPinError('Senha incorreta! (Padrão: admin123)');
+        }
+      };
+
+      const shuffleArray = (array) => {
+        const arr = [...array];
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+      };
+
+      const handleGenerateDraw = async () => {
+        const valid = participantsInput.filter(p => p.name.trim() !== '');
+
+        if (valid.length < 2) {
+          setModalConfig({
+            title: 'Participantes insuficientes',
+            message: 'Cadastre pelo menos 2 participantes para sortear.',
+            type: 'info'
+          });
+          return;
+        }
+
+        if (drawMode === 'pairs' && valid.length % 2 !== 0) {
+          setModalConfig({
+            title: 'Número ímpar para Duplas!',
+            message: `Para o modo duplas, o número precisa ser par (ex: 8 meninas = 4 duplas). Atualmente há ${valid.length}. Alterne para "Roda Tradicional" ou adicione/remova 1 amiga.`,
+            type: 'info'
+          });
+          return;
+        }
+
+        const shuffled = shuffleArray(valid);
+        const matches = {};
+
+        if (drawMode === 'pairs') {
+          for (let i = 0; i < shuffled.length; i += 2) {
+            matches[shuffled[i].id] = shuffled[i + 1].id;
+            matches[shuffled[i + 1].id] = shuffled[i].id;
+          }
+        } else {
+          for (let i = 0; i < shuffled.length; i++) {
+            matches[shuffled[i].id] = shuffled[(i + 1) % shuffled.length].id;
+          }
+        }
+
+        const prevMap = {};
+        (eventData?.participants || []).forEach(p => { prevMap[p.id] = p; });
+
+        const finalParticipants = valid.map((p, idx) => ({
+          id: p.id,
+          name: p.name.trim(),
+          color: p.color || AVATAR_COLORS[idx % AVATAR_COLORS.length],
+          drawnId: matches[p.id],
+          pin: prevMap[p.id]?.pin || null,
+          hasRevealed: false,
+          wishlist: prevMap[p.id]?.wishlist || [],
+          sizes: prevMap[p.id]?.sizes || { clothes: '', shoes: '', favColor: '', avoid: '' }
+        }));
+
+        const payload = {
+          title: title.trim() || 'Amigo Oculto das Meninas ✨',
+          date: date.trim(),
+          location: location.trim(),
+          budget: budget.trim(),
+          adminPass: adminPassConfig.trim() || 'admin123',
+          drawMode,
+          updatedAt: new Date().toISOString(),
+          participants: finalParticipants
+        };
+
+        const success = await syncToDatabase(payload);
+        if (success) setView('lobby');
+      };
+
+      const handleUpdateEventDetailsOnly = async () => {
+        if (!eventData) return;
+        const payload = {
+          ...eventData,
+          title: title.trim() || 'Amigo Oculto das Meninas ✨',
+          date: date.trim(),
+          location: location.trim(),
+          budget: budget.trim(),
+          adminPass: adminPassConfig.trim() || 'admin123'
+        };
+        const success = await syncToDatabase(payload);
+        if (success) setView('lobby');
+      };
+
+      const handleAddParticipantInput = () => {
+        if (!newFriendName.trim()) return;
+        setParticipantsInput([
+          ...participantsInput,
+          {
+            id: `p_${Date.now()}`,
+            name: newFriendName.trim(),
+            color: AVATAR_COLORS[participantsInput.length % AVATAR_COLORS.length]
+          }
+        ]);
+        setNewFriendName('');
+      };
+
+      const handleRemoveParticipantInput = (id) => {
+        setParticipantsInput(participantsInput.filter(p => p.id !== id));
+      };
+
+      const handleNameChangeInput = (id, newName) => {
+        setParticipantsInput(participantsInput.map(p => p.id === id ? { ...p, name: newName } : p));
+      };
+
+      const handleSelectParticipant = (p) => {
+        setSelectedParticipantId(p.id);
+        setPinInput('');
+        setPinConfirm('');
+        setPinError('');
+        setGiftBoxStage(0);
+        setView('participant_auth');
+      };
+
+      const handleAuthenticateParticipant = async (e) => {
+        e.preventDefault();
+        if (!currentParticipant) return;
+        const clean = pinInput.trim();
+        if (clean.length < 4) {
+          setPinError('O PIN deve ter 4 números.');
+          return;
+        }
+
+        if (!currentParticipant.pin) {
+          if (clean !== pinConfirm.trim()) {
+            setPinError('Os PINs não coincidem!');
+            return;
+          }
+          const updatedList = eventData.participants.map(p =>
+            p.id === currentParticipant.id ? { ...p, pin: clean } : p
+          );
+          await syncToDatabase({ ...eventData, participants: updatedList });
+          setActiveTab('reveal');
+          setView('participant_area');
+        } else {
+          if (clean === currentParticipant.pin) {
+            setActiveTab('reveal');
+            setView('participant_area');
+          } else {
+            setPinError('PIN incorreto!');
+          }
+        }
+      };
+
+      const handleOpenGiftBox = async () => {
+        if (giftBoxStage === 2) return;
+        setGiftBoxStage(1);
+        setTimeout(async () => {
+          setGiftBoxStage(2);
+          if (!currentParticipant.hasRevealed) {
+            const updatedList = eventData.participants.map(p =>
+              p.id === currentParticipant.id ? { ...p, hasRevealed: true } : p
+            );
+            syncToDatabase({ ...eventData, participants: updatedList });
+          }
+        }, 900);
+      };
+
+      const handleAddWish = async (e) => {
+        e.preventDefault();
+        if (!newWishItem.trim() || !currentParticipant) return;
+
+        const wish = {
+          id: `w_${Date.now()}`,
+          title: newWishItem.trim(),
+          category: newWishCategory,
+          notes: newWishNotes.trim(),
+          link: newWishLink.trim(),
+          createdAt: new Date().toISOString()
+        };
+
+        const updated = [...(currentParticipant.wishlist || []), wish];
+        const updatedList = eventData.participants.map(p =>
+          p.id === currentParticipant.id ? { ...p, wishlist: updated } : p
+        );
+
+        await syncToDatabase({ ...eventData, participants: updatedList });
+        setNewWishItem('');
+        setNewWishNotes('');
+        setNewWishLink('');
+      };
+
+      const handleRemoveWish = async (wishId) => {
+        if (!currentParticipant) return;
+        const updated = (currentParticipant.wishlist || []).filter(w => w.id !== wishId);
+        const updatedList = eventData.participants.map(p =>
+          p.id === currentParticipant.id ? { ...p, wishlist: updated } : p
+        );
+        await syncToDatabase({ ...eventData, participants: updatedList });
+      };
+
+      const handleSavePersonalSizes = async () => {
+        if (!currentParticipant) return;
+        setSavingSizes(true);
+        const updatedList = eventData.participants.map(p =>
+          p.id === currentParticipant.id ? { ...p, sizes: personalSizes } : p
+        );
+        await syncToDatabase({ ...eventData, participants: updatedList });
+        setTimeout(() => setSavingSizes(false), 600);
+      };
+
+      const handleResetPin = (p) => {
+        setModalConfig({
+          title: `Resetar PIN de ${p.name}?`,
+          message: `Isso apagará o código de acesso de ${p.name} para que ela crie um novo PIN de 4 números. Os presentes e o amigo sorteado permanecem intocados!`,
+          type: 'confirm',
+          onConfirm: async () => {
+            const updatedList = eventData.participants.map(item =>
+              item.id === p.id ? { ...item, pin: null } : item
+            );
+            await syncToDatabase({ ...eventData, participants: updatedList });
+            setModalConfig(null);
+          }
+        });
+      };
+
+      const handleCopyWhatsAppInvite = () => {
+        if (!eventData) return;
+        const mode = eventData.drawMode === 'pairs'
+          ? `Duplas Fechadas (${eventData.participants.length / 2} duplas)`
+          : 'Roda Tradicional Secreta';
+
+        const text = 
+`✨🎁 *${eventData.title}* 🎁✨
+
+Meninas, nosso sorteio secreto já está no ar! Nem o organizador sabe quem tirou quem! 🤫💖
+
+📅 *Data:* ${eventData.date || 'A combinar'}
+📍 *Local:* ${eventData.location || 'A combinar'}
+💝 *Valor:* ${eventData.budget || 'Livre'}
+🎲 *Formato:* ${mode}
+
+*Como participar:*
+1️⃣ Abra o link no seu celular e clique no seu nome
+2️⃣ Crie seu PIN de 4 números (só você saberá!)
+3️⃣ Veja quem tirou e preencha sua Wishlist para ajudar sua amiga! 🛍️`;
+
+        navigator.clipboard.writeText(text);
+        setCopiedWhatsApp(true);
+        setTimeout(() => setCopiedWhatsApp(false), 3000);
+      };
+
+      if (loading) {
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center p-6 text-center">
+            <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-rose-500 to-purple-600 flex items-center justify-center text-white shadow-xl animate-bounce mb-4 text-2xl">
+              🎁
+            </div>
+            <p className="text-rose-900 font-bold text-base">Carregando Amigo Oculto...</p>
+            <p className="text-xs text-rose-500 mt-1">Sincronizando com o Firebase...</p>
+          </div>
+        );
+      }
+
+      return (
+        <div className="min-h-screen pb-16">
+          {/* Header */}
+          <header className="sticky top-0 z-30 backdrop-blur-md bg-white/80 border-b border-rose-100 shadow-xs">
+            <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+              <div 
+                onClick={() => eventData && setView('lobby')}
+                className="flex items-center gap-3 cursor-pointer group"
+              >
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-rose-500 via-pink-500 to-purple-600 flex items-center justify-center text-white shadow-md text-xl group-hover:scale-105 transition-transform">
+                  🎁
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h1 className="font-extrabold text-base sm:text-lg text-slate-800 leading-tight">
+                      {eventData?.title || 'Amigo Oculto Secreto'}
+                    </h1>
+                    {dbStatus === 'ok' ? (
+                      <span className="hidden sm:inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        ● Conectado
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                        ⚠ Verificar Regras
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-rose-600 font-medium">100% Confidencial • Wishlist em Tempo Real</p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleTestDatabaseWrite}
+                  className="px-2.5 py-1.5 rounded-xl text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors"
+                >
+                  ⚡ Testar Banco
+                </button>
+                {eventData && view !== 'lobby' && (
+                  <button
+                    onClick={() => setView('lobby')}
+                    className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                  >
+                    ← Início
+                  </button>
+                )}
+                <button
+                  onClick={handleOpenOrganizerClick}
+                  className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 transition-colors"
+                >
+                  ⚙ Organizador
+                </button>
+              </div>
+            </div>
+          </header>
+
+          {dbErrorMsg && (
+            <div className="max-w-4xl mx-auto px-4 pt-4">
+              <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div className="space-y-1">
+                  <p className="font-bold text-amber-900">⚠️ Quase lá! Como resolver o bloqueio HTTP 401 do Firebase:</p>
+                  <p className="text-amber-800">{dbErrorMsg}</p>
+                  <p className="text-[11px] text-amber-700">
+                    1. Abra o <strong>Realtime Database → aba Regras</strong> no Firebase • 2. Cole as regras • 3. Clique no botão azul <strong>Publicar</strong>.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={handleCopyFirebaseRules}
+                    className="px-3 py-2 bg-white border border-amber-300 text-amber-900 rounded-xl font-bold hover:bg-amber-100 transition-colors"
+                  >
+                    {copiedRules ? '✓ Regra Copiada!' : '📋 Copiar Regra JSON'}
+                  </button>
+                  <button
+                    onClick={handleTestDatabaseWrite}
+                    className="px-3 py-2 bg-amber-600 text-white rounded-xl font-bold hover:bg-amber-700 transition-colors"
+                  >
+                    Testar Novamente
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <main className="max-w-4xl mx-auto px-4 pt-6">
+            {/* SENHA ORGANIZADOR */}
+            {view === 'admin_auth' && (
+              <div className="max-w-md mx-auto bg-white rounded-3xl shadow-xl border border-rose-100 p-6 sm:p-8 animate-fadeIn">
+                <button
+                  onClick={() => setView('lobby')}
+                  className="text-xs font-semibold text-slate-400 hover:text-rose-600 flex items-center gap-1 mb-6"
+                >
+                  ← Voltar ao início
+                </button>
+                <div className="text-center mb-6">
+                  <div className="w-14 h-14 mx-auto rounded-2xl bg-slate-900 text-white flex items-center justify-center text-2xl shadow-lg mb-3">
+                    🔐
+                  </div>
+                  <h2 className="text-xl font-black text-slate-800">Painel do Organizador</h2>
+                  <p className="text-xs text-slate-500 mt-1">Digite a senha de administrador.</p>
+                </div>
+                <form onSubmit={handleVerifyAdminPassword} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1.5 text-center">
+                      Senha (Padrão: <span className="text-rose-600 font-mono">admin123</span>)
+                    </label>
+                    <input
+                      type="password"
+                      value={adminPinInput}
+                      onChange={(e) => setAdminPinInput(e.target.value)}
+                      placeholder="Senha..."
+                      className="w-full text-center text-base font-bold py-3 px-4 rounded-2xl border-2 border-slate-200 focus:border-rose-500 outline-none"
+                      autoFocus
+                    />
+                  </div>
+                  {adminPinError && (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold text-center">
+                      {adminPinError}
+                    </div>
+                  )}
+                  <button
+                    type="submit"
+                    className="w-full py-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-sm shadow-lg transition-all"
+                  >
+                    Acessar Configurações
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* CONFIGURAÇÃO / SETUP */}
+            {view === 'setup' && (
+              <div className="bg-white rounded-3xl shadow-xl border border-rose-100 overflow-hidden animate-fadeIn">
+                <div className="bg-gradient-to-r from-rose-500 via-pink-500 to-purple-600 p-6 sm:p-8 text-white">
+                  <span className="inline-block px-3 py-1 rounded-full bg-white/20 text-xs font-semibold mb-3">
+                    🛡 Sorteio 100% Cego: Nem você saberá quem tirou quem!
+                  </span>
+                  <h2 className="text-2xl sm:text-3xl font-black">Configurar Amigo Oculto das Meninas</h2>
+                  <p className="text-rose-100 text-sm mt-1">Preencha as regras e os nomes para o sorteio.</p>
+                </div>
+
+                <div className="p-6 sm:p-8 space-y-8">
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-rose-600 mb-4">
+                      1. Informações do Encontro
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Título do Evento</label>
+                        <input
+                          type="text"
+                          value={title}
+                          onChange={(e) => setTitle(e.target.value)}
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Valor Sugerido</label>
+                        <input
+                          type="text"
+                          value={budget}
+                          onChange={(e) => setBudget(e.target.value)}
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Data e Hora</label>
+                        <input
+                          type="text"
+                          value={date}
+                          onChange={(e) => setDate(e.target.value)}
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Local</label>
+                        <input
+                          type="text"
+                          value={location}
+                          onChange={(e) => setLocation(e.target.value)}
+                          className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                        />
+                      </div>
+                      <div className="sm:col-span-2">
+                        <label className="block text-xs font-semibold text-slate-600 mb-1">Senha do Organizador</label>
+                        <input
+                          type="text"
+                          value={adminPassConfig}
+                          onChange={(e) => setAdminPassConfig(e.target.value)}
+                          className="w-full sm:w-64 px-4 py-2 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {eventData?.participants && (
+                    <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                          Status & Reset de PINs das Amigas
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={handleUpdateEventDetailsOnly}
+                          className="text-xs font-bold text-rose-600 hover:underline"
+                        >
+                          Salvar apenas textos acima
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
+                        {eventData.participants.map(p => (
+                          <div key={p.id} className="bg-white p-3 rounded-xl border border-slate-200 flex items-center justify-between">
+                            <div>
+                              <p className="font-bold text-xs text-slate-800">{p.name}</p>
+                              <p className="text-[10px] text-slate-500">
+                                {p.pin ? '🔒 Com PIN' : '⏳ Sem PIN'} • {p.wishlist?.length || 0} dicas
+                              </p>
+                            </div>
+                            {p.pin && (
+                              <button
+                                type="button"
+                                onClick={() => handleResetPin(p)}
+                                className="px-2 py-1 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 text-[10px] font-bold"
+                              >
+                                Resetar
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-rose-600 mb-3">
+                      2. Formato do Sorteio
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div
+                        onClick={() => setDrawMode('pairs')}
+                        className={`cursor-pointer rounded-2xl p-4 border-2 transition-all ${
+                          drawMode === 'pairs' ? 'border-rose-500 bg-rose-50/70' : 'border-slate-200 bg-white'
+                        }`}
+                      >
+                        <h4 className="font-bold text-slate-800 text-sm">Modo 4 Duplas (Pares Fechados)</h4>
+                        <p className="text-xs text-slate-600 mt-1">
+                          Divide 8 meninas em 4 pares secretos (A tira B e B tira A mutuamente).
+                        </p>
+                      </div>
+                      <div
+                        onClick={() => setDrawMode('cycle')}
+                        className={`cursor-pointer rounded-2xl p-4 border-2 transition-all ${
+                          drawMode === 'cycle' ? 'border-purple-500 bg-purple-50/70' : 'border-slate-200 bg-white'
+                        }`}
+                      >
+                        <h4 className="font-bold text-slate-800 text-sm">Roda Tradicional Única</h4>
+                        <p className="text-xs text-slate-600 mt-1">
+                          A tira B, B tira C, e a última tira A. Ninguém tira quem a tirou!
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h3 className="text-sm font-bold uppercase tracking-wider text-rose-600 mb-3">
+                      3. Participantes ({participantsInput.length})
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+                      {participantsInput.map((person, index) => (
+                        <div key={person.id} className="flex items-center gap-2 bg-slate-50 p-2 rounded-2xl border border-slate-200">
+                          <span className="w-8 h-8 rounded-xl bg-slate-800 text-white font-bold text-xs flex items-center justify-center shrink-0">
+                            {index + 1}
+                          </span>
+                          <input
+                            type="text"
+                            value={person.name}
+                            onChange={(e) => handleNameChangeInput(person.id, e.target.value)}
+                            className="w-full bg-transparent text-sm font-medium outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveParticipantInput(person.id)}
+                            className="text-slate-400 hover:text-rose-600 p-1"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newFriendName}
+                        onChange={(e) => setNewFriendName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddParticipantInput()}
+                        placeholder="Nome de outra amiga..."
+                        className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 text-sm outline-none focus:border-rose-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddParticipantInput}
+                        className="px-4 py-2.5 rounded-xl bg-slate-800 text-white text-xs font-semibold"
+                      >
+                        + Adicionar
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <p className="text-xs text-slate-500">🔒 Dados criptografados e salvos no Firebase.</p>
+                    <div className="flex items-center gap-3 w-full sm:w-auto">
+                      {eventData && (
+                        <button
+                          type="button"
+                          onClick={() => setView('lobby')}
+                          className="px-5 py-3 rounded-2xl border border-slate-200 text-slate-600 text-sm font-semibold"
+                        >
+                          Cancelar
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={handleGenerateDraw}
+                        className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-500 to-purple-600 text-white font-bold text-sm shadow-lg w-full sm:w-auto"
+                      >
+                        {eventData ? 'Salvar e Sortear Novamente' : 'Realizar Sorteio Secreto!'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* LOBBY */}
+            {view === 'lobby' && eventData && (
+              <div className="space-y-6 animate-fadeIn">
+                <div className="bg-white rounded-3xl p-6 shadow-md border border-rose-100 flex flex-col md:flex-row md:items-center justify-between gap-6">
+                  <div className="space-y-2">
+                    <span className="inline-block px-3 py-1 rounded-full bg-rose-50 text-rose-700 text-xs font-bold border border-rose-200">
+                      {eventData.drawMode === 'pairs'
+                        ? `Modo ${eventData.participants.length / 2} Duplas Fechadas`
+                        : 'Modo Roda Tradicional'}
+                    </span>
+                    <h2 className="text-2xl font-black text-slate-800">{eventData.title}</h2>
+                    <div className="flex flex-wrap items-center gap-3 text-xs font-medium text-slate-600 pt-1">
+                      {eventData.date && <span className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">📅 {eventData.date}</span>}
+                      {eventData.location && <span className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">📍 {eventData.location}</span>}
+                      {eventData.budget && <span className="bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-100">💰 {eventData.budget}</span>}
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleCopyWhatsAppInvite}
+                    className="px-4 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs shadow-md shrink-0 transition-colors"
+                  >
+                    {copiedWhatsApp ? '✓ Convite Copiado!' : '📲 Copiar Texto p/ WhatsApp'}
+                  </button>
+                </div>
+
+                <div className="text-center py-2">
+                  <h3 className="text-lg font-bold text-slate-800">Quem é você na lista? 👇</h3>
+                  <p className="text-xs text-slate-500 mt-1">Toque no seu nome para entrar ou criar seu PIN secreto.</p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                  {eventData.participants.map(p => {
+                    const wishCount = p.wishlist?.length || 0;
+                    return (
+                      <div
+                        key={p.id}
+                        onClick={() => handleSelectParticipant(p)}
+                        className="cursor-pointer bg-white rounded-3xl p-5 shadow-xs hover:shadow-xl border border-rose-100 hover:border-rose-300 transition-all flex flex-col justify-between"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between mb-4">
+                            <div className={`w-12 h-12 rounded-2xl bg-gradient-to-tr ${p.color} text-white font-black text-lg flex items-center justify-center shadow-md`}>
+                              {p.name.charAt(0).toUpperCase()}
+                            </div>
+                            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-50 border border-slate-200 text-slate-600">
+                              {p.pin ? '🔒 Protegido' : '🔑 1º Acesso'}
+                            </span>
+                          </div>
+                          <h4 className="font-bold text-base text-slate-800">{p.name}</h4>
+                          <div className="mt-3 pt-3 border-t border-slate-100 text-xs text-slate-500 space-y-1">
+                            <div className="flex justify-between">
+                              <span>Visualizado:</span>
+                              <span className={p.hasRevealed ? 'text-emerald-600 font-bold' : 'text-slate-400'}>
+                                {p.hasRevealed ? '✓ Sim' : 'Ainda não'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Wishlist:</span>
+                              <span className={wishCount > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}>
+                                {wishCount === 0 ? 'Vazia' : `${wishCount} dicas`}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 pt-2">
+                          <button className="w-full py-2.5 rounded-xl bg-rose-50 text-rose-700 font-bold text-xs hover:bg-rose-500 hover:text-white transition-colors">
+                            {p.pin ? 'Entrar com PIN' : 'Criar Meu PIN'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* AUTENTICAÇÃO PARTICIPANTE */}
+            {view === 'participant_auth' && currentParticipant && (
+              <div className="max-w-md mx-auto bg-white rounded-3xl shadow-xl border border-rose-100 p-6 sm:p-8 animate-fadeIn">
+                <button
+                  onClick={() => setView('lobby')}
+                  className="text-xs font-semibold text-slate-400 hover:text-rose-600 flex items-center gap-1 mb-6"
+                >
+                  ← Voltar para lista
+                </button>
+                <div className="text-center mb-6">
+                  <div className={`w-16 h-16 mx-auto rounded-2xl bg-gradient-to-tr ${currentParticipant.color} text-white font-black text-2xl flex items-center justify-center shadow-lg mb-3`}>
+                    {currentParticipant.name.charAt(0).toUpperCase()}
+                  </div>
+                  <h2 className="text-xl font-black text-slate-800">Olá, {currentParticipant.name}! 💖</h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    {!currentParticipant.pin ? 'Crie seu PIN de 4 números para este acesso.' : 'Digite seu PIN secreto de 4 números.'}
+                  </p>
+                </div>
+
+                <form onSubmit={handleAuthenticateParticipant} className="space-y-4">
+                  <div>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      maxLength={4}
+                      value={pinInput}
+                      onChange={(e) => setPinInput(e.target.value.replace(/\D/g, ''))}
+                      placeholder="• • • •"
+                      className="w-full text-center tracking-[1em] text-2xl font-black py-3 rounded-2xl border-2 border-rose-200 focus:border-rose-500 outline-none"
+                      autoFocus
+                    />
+                  </div>
+
+                  {!currentParticipant.pin && (
+                    <div>
+                      <label className="block text-xs font-bold text-slate-600 mb-1 text-center">Confirme o PIN</label>
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        maxLength={4}
+                        value={pinConfirm}
+                        onChange={(e) => setPinConfirm(e.target.value.replace(/\D/g, ''))}
+                        placeholder="• • • •"
+                        className="w-full text-center tracking-[1em] text-2xl font-black py-3 rounded-2xl border-2 border-rose-200 focus:border-rose-500 outline-none"
+                      />
+                    </div>
+                  )}
+
+                  {pinError && (
+                    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold text-center">
+                      {pinError}
+                    </div>
+                  )}
+
+                  <button
+                    type="submit"
+                    className="w-full py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-purple-600 text-white font-bold text-sm shadow-lg hover:opacity-95 transition-opacity"
+                  >
+                    {!currentParticipant.pin ? 'Salvar PIN e Abrir' : 'Acessar Meu Amigo Secreto'}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* ÁREA DA PARTICIPANTE */}
+            {view === 'participant_area' && currentParticipant && (
+              <div className="space-y-6 animate-fadeIn">
+                <div className="bg-white rounded-3xl p-5 shadow-sm border border-rose-100 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-12 h-12 rounded-2xl bg-gradient-to-tr ${currentParticipant.color} text-white font-black text-xl flex items-center justify-center shadow-md`}>
+                      {currentParticipant.name.charAt(0).toUpperCase()}
+                    </div>
+                    <div>
+                      <span className="text-[11px] font-bold text-rose-500 uppercase tracking-wider">Área Privada</span>
+                      <h2 className="text-xl font-black text-slate-800">Painel de {currentParticipant.name}</h2>
+                    </div>
+                  </div>
+
+                  <div className="flex bg-rose-50 p-1.5 rounded-2xl border border-rose-100">
+                    <button
+                      onClick={() => setActiveTab('reveal')}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                        activeTab === 'reveal' ? 'bg-white text-rose-600 shadow-xs' : 'text-slate-600'
+                      }`}
+                    >
+                      🎁 Quem Eu Tirei
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('wishlist')}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                        activeTab === 'wishlist' ? 'bg-white text-purple-700 shadow-xs' : 'text-slate-600'
+                      }`}
+                    >
+                      🛍️ Minha Wishlist ({currentParticipant.wishlist?.length || 0})
+                    </button>
+                  </div>
+                </div>
+
+                {activeTab === 'reveal' && drawnParticipant && (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    <div className="lg:col-span-5 bg-white rounded-3xl p-6 sm:p-8 shadow-md border border-rose-100 flex flex-col items-center justify-center text-center">
+                      {giftBoxStage < 2 ? (
+                        <div className="py-6 flex flex-col items-center">
+                          <div
+                            onClick={handleOpenGiftBox}
+                            className={`w-28 h-28 rounded-3xl bg-gradient-to-tr from-rose-500 via-pink-500 to-amber-400 text-white flex items-center justify-center text-5xl shadow-2xl cursor-pointer mb-6 transition-transform ${
+                              giftBoxStage === 1 ? 'animate-bounce scale-110' : 'hover:scale-105'
+                            }`}
+                          >
+                            🎁
+                          </div>
+                          <h3 className="text-lg font-black text-slate-800 mb-2">Descubra sua amiga!</h3>
+                          <p className="text-xs text-slate-500 max-w-xs mb-6">
+                            Nenhuma amiga está olhando para a tela do seu celular? 🤫
+                          </p>
+                          <button
+                            onClick={handleOpenGiftBox}
+                            className="px-6 py-3.5 rounded-2xl bg-gradient-to-r from-rose-500 to-purple-600 text-white font-bold text-sm shadow-lg hover:opacity-95"
+                          >
+                            ✨ Abrir Caixa de Presente
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="py-4 flex flex-col items-center animate-fadeIn w-full">
+                          <span className="px-3 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-bold mb-3">
+                            🎉 Sorteio Revelado!
+                          </span>
+                          <p className="text-xs font-semibold uppercase text-slate-400">Sua Amiga Oculta é:</p>
+                          <div className={`w-20 h-20 rounded-3xl bg-gradient-to-tr ${drawnParticipant.color} text-white font-black text-3xl flex items-center justify-center shadow-xl my-3`}>
+                            {drawnParticipant.name.charAt(0).toUpperCase()}
+                          </div>
+                          <h3 className="text-3xl font-black bg-gradient-to-r from-rose-600 to-purple-600 bg-clip-text text-transparent">
+                            {drawnParticipant.name}
+                          </h3>
+                          {eventData.drawMode === 'pairs' && (
+                            <p className="text-xs text-rose-600 bg-rose-50 px-3 py-1.5 rounded-xl font-medium mt-3 border border-rose-100">
+                              💝 Vocês formam uma das 4 duplas secretas!
+                            </p>
+                          )}
+                          <button
+                            onClick={() => setGiftBoxStage(0)}
+                            className="mt-6 text-xs text-slate-400 hover:text-slate-600"
+                          >
+                            🙈 Ocultar nome novamente
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="lg:col-span-7 bg-white rounded-3xl p-6 sm:p-8 shadow-md border border-rose-100">
+                      {giftBoxStage < 2 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-center py-12 text-slate-400">
+                          <p className="text-sm font-semibold">Abra a caixa para ver a Wishlist da sua amiga!</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-5 animate-fadeIn">
+                          <div className="border-b border-slate-100 pb-3">
+                            <span className="text-xs font-bold uppercase text-purple-600">Dicas em Tempo Real</span>
+                            <h3 className="text-xl font-black text-slate-800">Wishlist de {drawnParticipant.name} ✨</h3>
+                          </div>
+
+                          {(drawnParticipant.sizes?.clothes || drawnParticipant.sizes?.shoes || drawnParticipant.sizes?.favColor || drawnParticipant.sizes?.avoid) && (
+                            <div className="space-y-2 bg-rose-50/60 p-3.5 rounded-2xl border border-rose-100">
+                              <div className="grid grid-cols-3 gap-2 text-xs">
+                                <div><span className="text-[10px] text-slate-400 block font-bold uppercase">Roupa</span><strong>{drawnParticipant.sizes?.clothes || '-'}</strong></div>
+                                <div><span className="text-[10px] text-slate-400 block font-bold uppercase">Calçado</span><strong>{drawnParticipant.sizes?.shoes || '-'}</strong></div>
+                                <div><span className="text-[10px] text-slate-400 block font-bold uppercase">Cores</span><strong>{drawnParticipant.sizes?.favColor || '-'}</strong></div>
+                              </div>
+                              {drawnParticipant.sizes?.avoid && (
+                                <p className="text-xs text-amber-800 pt-2 border-t border-rose-100">
+                                  <strong>🚫 Evitar:</strong> {drawnParticipant.sizes.avoid}
+                                </p>
+                              )}
+                            </div>
+                          )}
+
+                          {(!drawnParticipant.wishlist || drawnParticipant.wishlist.length === 0) ? (
+                            <p className="text-sm text-slate-500 py-6 text-center">A {drawnParticipant.name} ainda não adicionou itens na lista.</p>
+                          ) : (
+                            <div className="space-y-3">
+                              {drawnParticipant.wishlist.map(item => (
+                                <div key={item.id} className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200">
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">{item.category}</span>
+                                  <h4 className="font-bold text-sm text-slate-800 mt-1">{item.title}</h4>
+                                  {item.notes && <p className="text-xs text-slate-500 mt-0.5">{item.notes}</p>}
+                                  {item.link && (
+                                    <a href={item.link.startsWith('http') ? item.link : `https://${item.link}`} target="_blank" className="text-xs text-rose-600 font-bold hover:underline block mt-1">
+                                      🔗 Ver link da loja
+                                    </a>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {activeTab === 'wishlist' && (
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-fadeIn">
+                    <div className="lg:col-span-5 space-y-6">
+                      <div className="bg-white rounded-3xl p-6 shadow-md border border-rose-100 space-y-4">
+                        <h3 className="text-base font-black text-slate-800">Meus Tamanhos & Dicas</h3>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500">Roupa</label>
+                            <input
+                              type="text"
+                              value={personalSizes.clothes}
+                              onChange={(e) => setPersonalSizes({ ...personalSizes, clothes: e.target.value })}
+                              placeholder="P / 38"
+                              className="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500">Calçado</label>
+                            <input
+                              type="text"
+                              value={personalSizes.shoes}
+                              onChange={(e) => setPersonalSizes({ ...personalSizes, shoes: e.target.value })}
+                              placeholder="36"
+                              className="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-slate-500">Cores</label>
+                            <input
+                              type="text"
+                              value={personalSizes.favColor}
+                              onChange={(e) => setPersonalSizes({ ...personalSizes, favColor: e.target.value })}
+                              placeholder="Rosa"
+                              className="w-full px-2 py-1.5 rounded-lg border border-slate-200 text-xs"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-amber-700">O que evitar / alergias</label>
+                          <input
+                            type="text"
+                            value={personalSizes.avoid}
+                            onChange={(e) => setPersonalSizes({ ...personalSizes, avoid: e.target.value })}
+                            placeholder="Perfumes doces, etc."
+                            className="w-full px-2 py-1.5 rounded-lg border border-amber-200 bg-amber-50/30 text-xs"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={handleSavePersonalSizes}
+                          className="w-full py-2 rounded-xl bg-rose-50 text-rose-700 font-bold text-xs"
+                        >
+                          {savingSizes ? '✓ Salvo!' : 'Salvar Preferências'}
+                        </button>
+                      </div>
+
+                      <form onSubmit={handleAddWish} className="bg-white rounded-3xl p-6 shadow-md border border-rose-100 space-y-3">
+                        <h3 className="text-base font-black text-slate-800">+ Adicionar Presente</h3>
+                        <input
+                          type="text"
+                          value={newWishItem}
+                          onChange={(e) => setNewWishItem(e.target.value)}
+                          placeholder="Nome do presente..."
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs outline-none"
+                          required
+                        />
+                        <select
+                          value={newWishCategory}
+                          onChange={(e) => setNewWishCategory(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white"
+                        >
+                          <option>Beleza & Skincare</option>
+                          <option>Roupas & Moda</option>
+                          <option>Acessórios & Joias</option>
+                          <option>Livros & Papelaria</option>
+                          <option>Outros</option>
+                        </select>
+                        <input
+                          type="text"
+                          value={newWishNotes}
+                          onChange={(e) => setNewWishNotes(e.target.value)}
+                          placeholder="Detalhes ou marca..."
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs"
+                        />
+                        <input
+                          type="text"
+                          value={newWishLink}
+                          onChange={(e) => setNewWishLink(e.target.value)}
+                          placeholder="Link da loja (opcional)..."
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs"
+                        />
+                        <button
+                          type="submit"
+                          className="w-full py-2.5 rounded-xl bg-purple-600 text-white font-bold text-xs shadow-md"
+                        >
+                          Adicionar à Minha Wishlist
+                        </button>
+                      </form>
+                    </div>
+
+                    <div className="lg:col-span-7 bg-white rounded-3xl p-6 sm:p-8 shadow-md border border-rose-100">
+                      <h3 className="text-xl font-black text-slate-800 mb-4">Minha Wishlist ({currentParticipant.wishlist?.length || 0})</h3>
+                      {(!currentParticipant.wishlist || currentParticipant.wishlist.length === 0) ? (
+                        <p className="text-sm text-slate-500 py-12 text-center">Sua lista está vazia! Adicione dicas para sua amiga oculta.</p>
+                      ) : (
+                        <div className="space-y-3">
+                          {currentParticipant.wishlist.map(item => (
+                            <div key={item.id} className="p-3.5 rounded-2xl bg-rose-50/40 border border-rose-100 flex items-start justify-between">
+                              <div>
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">{item.category}</span>
+                                <h4 className="font-bold text-sm text-slate-800 mt-1">{item.title}</h4>
+                                {item.notes && <p className="text-xs text-slate-500">{item.notes}</p>}
+                              </div>
+                              <button
+                                onClick={() => handleRemoveWish(item.id)}
+                                className="text-slate-400 hover:text-rose-600 p-1"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </main>
+
+          {/* Modal */}
+          {modalConfig && (
+            <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+              <div className="bg-white rounded-3xl max-w-sm w-full p-6 shadow-2xl border border-rose-100 animate-fadeIn">
+                <h3 className="text-lg font-black text-slate-800 mb-2">{modalConfig.title}</h3>
+                <p className="text-xs text-slate-600 leading-relaxed mb-6">{modalConfig.message}</p>
+                <div className="flex items-center justify-end gap-2">
+                  {modalConfig.type === 'confirm' && (
+                    <button
+                      onClick={() => setModalConfig(null)}
+                      className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 text-xs font-bold"
+                    >
+                      Cancelar
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      if (modalConfig.onConfirm) modalConfig.onConfirm();
+                      else setModalConfig(null);
+                    }}
+                    className="px-5 py-2 rounded-xl bg-rose-500 text-white text-xs font-bold shadow-md"
+                  >
+                    Confirmar
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
